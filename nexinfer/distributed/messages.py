@@ -14,6 +14,7 @@ transport. Message types:
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -33,3 +34,12 @@ class Msg:
 
     def to_dict(self) -> dict:
         return {"type": self.type, "payload": self.payload, "src": self.src, "dst": self.dst}
+
+    def to_json(self) -> str:
+        return json.dumps(self.to_dict())
+
+    @classmethod
+    def from_json(cls, raw: bytes | str | bytearray) -> Msg:
+        if isinstance(raw, (bytes, bytearray)):
+            raw = raw.decode()
+        return cls.from_dict(json.loads(raw))

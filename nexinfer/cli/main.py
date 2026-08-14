@@ -52,6 +52,12 @@ def _build_parser() -> argparse.ArgumentParser:
     ps.add_argument("--backend", default=None)
     ps.add_argument("--layers", type=int, default=12)
     ps.add_argument("--hidden", type=int, default=768)
+    ps.add_argument("--api-key", default=None, help="lock the API behind Bearer auth (env: NEXINFER_API_KEY)")
+    ps.add_argument("--rate-limit", type=int, default=0, help="requests per minute per client IP (0 = off)")
+    ps.add_argument("--log-format", choices=["text", "json"], default="text", help="structured log format")
+    ps.add_argument("--cors-origin", default="*", help="Access-Control-Allow-Origin value")
+    ps.add_argument("--max-prompt-chars", type=int, default=None)
+    ps.add_argument("--max-tokens-cap", type=int, default=None)
 
     # chat
     pc = sub.add_parser("chat", help="interactive chat")
@@ -75,6 +81,7 @@ def _build_parser() -> argparse.ArgumentParser:
     pcl.add_argument("--port", type=int, default=9000)
     pcl.add_argument("--transport", default="tcp", choices=["tcp", "grpc", "webrtc", "rdma"])
     pcl.add_argument("--peers", nargs="*", default=[])
+    pcl.add_argument("--coordinator", help="coordinator host:port for workers (enables reconnect loop)")
     pcl.add_argument("--layers", type=int, default=12)
     pcl.add_argument("--hidden", type=int, default=768)
 
@@ -162,7 +169,15 @@ def _cmd_serve(args: argparse.Namespace) -> None:
     engine = Engine()
     spec = _default_spec(args)
     engine.bootstrap(args.model, spec, backend_name=args.backend)
-    server = HttpServer(engine)
+    server = HttpServer(
+        engine,
+        api_key=args.api_key,
+        rate_limit=args.rate_limit,
+        log_format=args.log_format,
+        cors_origin=args.cors_origin,
+        max_prompt_chars=args.max_prompt_chars,
+        max_tokens_cap=args.max_tokens_cap,
+    )
     print(f"NexusInfer server on http://{args.host}:{args.port} (OpenAI-compatible /v1/chat/completions)")
     server.run(args.host, args.port)
 
@@ -273,6 +288,22 @@ def _cmd_cluster(args: argparse.Namespace) -> None:
             control_port=args.port,
         )
         asyncio.run(worker.start())
+        if args.coordinator:
+            # register with the coordinator and keep retrying (with
+            # exponential backoff) if the coordinator restarts or the
+            # network drops -- the worker recovers automatically
+            host, _, port = args.coordinator.partition(":")
+            worker.coordinator_host = host or "127.0.0.1"
+            worker.coordinator_port = int(port or 9000)
+            ok = asyncio.run(worker._register(args.node_id))
+            if ok:
+                print(f"worker {args.node_id} registered with coordinator {args.coordinator}")
+            else:
+                print(f"worker {args.node_id}: coordinator unreachable -- entering reconnect loop")
+            try:
+                asyncio.get_event_loop().run_until_complete(worker.run_reconnect_loop())
+            except KeyboardInterrupt:
+                asyncio.run(worker.close())
 
 
 def _cmd_mcp(args: argparse.Namespace) -> None:

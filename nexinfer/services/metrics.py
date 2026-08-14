@@ -40,6 +40,9 @@ class MetricsCollector:
         self.start_time = time.time()
         self._bucket_counts: list[int] = [0] * (len(HISTOGRAM_BUCKETS) + 1)
         self._latency_sum = 0.0
+        # per-subsystem breakdown: prefill / decode / queue_wait / tool_call / transport / total
+        self._subsystem_sums: dict[str, float] = {}
+        self._subsystem_counts: dict[str, int] = {}
 
     # -- counters ----------------------------------------------------------
 
@@ -54,7 +57,11 @@ class MetricsCollector:
             self.tokens_input_total += input_tokens
             self.tokens_output_total += output_tokens
 
-    def record_latency(self, seconds: float) -> None:
+    def record_latency(self, seconds: float, subsystem: str = "total") -> None:
+        """Record a latency sample. ``subsystem`` is one of
+        ``prefill/decode/queue_wait/tool_call/transport/total`` and feeds
+        the per-subsystem breakdown (totals + histogram) exposed on
+        ``/metrics`` and in JSON log spans."""
         with self._lock:
             self.inference_seconds_total += seconds
             self._latency_sum += seconds
@@ -70,6 +77,9 @@ class MetricsCollector:
                     break
             for i in range(bucket, len(self._bucket_counts)):
                 self._bucket_counts[i] += 1
+            # per-subsystem accumulation
+            self._subsystem_sums[subsystem] = self._subsystem_sums.get(subsystem, 0.0) + seconds
+            self._subsystem_counts[subsystem] = self._subsystem_counts.get(subsystem, 0) + 1
 
     def set_queue_depth(self, depth: int) -> None:
         with self._lock:
@@ -147,6 +157,20 @@ class MetricsCollector:
             "Total wall-clock seconds spent in generation",
         )
         _histogram("nexinfer_request_latency_seconds")
+        with self._lock:
+            subsystems = dict(self._subsystem_sums)
+            subsystem_counts = dict(self._subsystem_counts)
+        for sub, total in subsystems.items():
+            _counter(
+                f'nexinfer_subsystem_seconds_total{{subsystem="{sub}"}}',
+                total,
+                f"Total seconds spent in the {sub} subsystem",
+            )
+            _counter(
+                f'nexinfer_subsystem_total{{subsystem="{sub}"}}',
+                subsystem_counts.get(sub, 0),
+                f"Total number of {sub} spans measured",
+            )
         _gauge("nexinfer_queue_depth", self.queue_depth, "Number of requests waiting in the scheduler queue")
         _gauge(
             "nexinfer_requests_running",

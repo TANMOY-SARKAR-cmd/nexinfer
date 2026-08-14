@@ -131,6 +131,10 @@ class Scheduler:
         return self.running.get(req_id) or next((r for r in self.waiting if r.req.request_id == req_id), None)
 
     @property
+    def num_waiting(self) -> int:
+        """Requests queued but not yet admitted."""
+        return len(self.waiting)
+
     def num_running(self) -> int:
         return len(self.running)
 

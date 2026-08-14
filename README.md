@@ -77,11 +77,30 @@ demo/             e2e_demo.py
 tests/            pytest suite covering every subsystem
 ```
 
+## What was added in v0.3 / v0.4
+
+Since the v0.2 prototype, four hardening themes were implemented and verified by
+the test suite (now 95 tests passing):
+
+| Area | What changed |
+|---|---|
+| **HTTP security** | `--api-key` / `NEXINFER_API_KEY` bearer gate, `--rate-limit` per-minute limiter, input-size/encoding policy, CORS origin control, a `/v1/status` endpoint, and a `DELETE /v1/chat/completions/<id>` cancel endpoint |
+| **Structured observability** | JSON log formatter, configurable logging (`--log-format`), trace IDs, per-request `SpanTimer` spans, and per-subsystem latency recording in the Prometheus `/metrics` endpoint |
+| **Distributed fault tolerance** | `HealthMonitor` with heartbeat timeouts and auto-shrinking check intervals, a reconnect loop for dropped coordinators, node-dead replanning, `wait_for_heartbeat` for cluster bootstrapping, and non-blocking async mDNS announcement (the blocking zeroconf call no longer freezes startup) |
+| **GGML production hardening** | `ContextOverflowError` with an `n_ctx` auto-sizing path (llama.cpp rounds to 32-token granularity), overflow guards on both prompt prefill and decode, BOS/vocabulary-index guards, and crash-isolated `free()` cleanup |
+| **Abort-on-cancel** | Every `GenerationRequest` carries an abort flag; the engine checks it each decode step and finishes with `finish_reason="abort"`; `Engine.register()` / `cancel()` plus the HTTP cancel endpoint wire it end-to-end |
+| **Distributed generation engine** | `DistributedEngine` drives rank-0 `generate()` through the real tensor transport (activations hop the pipeline, the final rank pushes logits back to rank-0), decodes token ids with stop-condition support, and is covered by a new multi-process **generation-parity test** that spawns a real coordinator and rank-1 subprocess and compares token output against the single-node reference |
+
+Note on CI: the GitHub Actions workflow was committed locally but could not be
+pushed (the sync token lacks the `workflows` scope) — add the workflow file
+manually via the GitHub web UI so the suite runs on every push.
+
 ## Status / Reality Check
 
-NexusInfer is at **v0.2 prototype** level — the architecture is complete and the core
-execution paths are real, but it is not yet a hardened production system. Be
-explicit about what works today and what is still a template:
+NexusInfer is at **v0.4 prototype-hardened** level — the architecture is complete,
+the core execution paths are real, and the security/observability/fault-tolerance
+gaps from v0.2 have been closed. It is still not a field-tested production
+system. Be explicit about what works today and what is still a template:
 
 | Area | Status |
 |---|---|
@@ -90,10 +109,11 @@ explicit about what works today and what is still a template:
 | ONNX Runtime backend (`ort`) | **Functional** — KV-cache and stateless models; includes a programmatic demo-model builder for CI without downloads |
 | OpenAI-compatible HTTP server | **Functional** — chat completions, streaming, models, health, and a `/metrics` Prometheus endpoint |
 | Chat templates, MCP, skills, internet gateway, git memory (incl. vector search) | **Functional** — covered by the pytest suite |
-| Distributed pipeline parallelism | **Architecture-complete and verified** — a real multi-process pipeline ring over TCP was tested end-to-end and produces token-identical output to the single-node reference |
+| Distributed pipeline parallelism | **Verified end-to-end** — a real multi-process pipeline ring over TCP produces token-identical output to the single-node reference; `DistributedEngine` ships with a generation-parity integration test (coordinator + rank-1 subprocess) and works over the real tensor transport |
+| HTTP server hardening | **Verified** — API-key auth, rate limiting, input policy, CORS, request-cancel abort, `/v1/status`, structured JSON logs with trace IDs, and per-subsystem latency metrics |
 | CUDA / ROCm / DirectML / TPU / special-module | **Documented templates** — the interfaces and device-detection scaffolding exist so anyone can drop in the real runtime; real driver integration (cuBLAS, hipBLAS, OpenVINO, libtpu) is the main remaining engineering job |
 | RDMA / WebRTC transports | **Scaffolding + design** — TCP/gRPC transports are production-shaped; RDMA and WebRTC have the protocol layer written but not field-tested |
-| Multi-node multi-GPU production | **Not yet** — the cluster protocol works on homogeneous and heterogeneous CPU clusters; large-scale GPU deployment needs benchmarking, fault tolerance, and topology-aware placement |
+| Multi-node multi-GPU production | **Not yet** — the cluster protocol works on homogeneous and heterogeneous CPU clusters with fault tolerance; large-scale GPU deployment needs benchmarking and topology-aware placement |
 
 The CI workflow (GitHub Actions, Python 3.11 + 3.12) runs the linter and the
 full pytest suite on every push, so regressions in the functional paths are

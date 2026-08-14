@@ -33,6 +33,7 @@ import logging
 import numpy as np
 
 from nexinfer.backends.base import Backend, ModelSpec
+from nexinfer.distributed.health import reconnect_loop
 from nexinfer.distributed.messages import Msg
 from nexinfer.distributed.planner import ClusterPlan, NodeSpec
 from nexinfer.engine.types import ParallelMode
@@ -79,10 +80,19 @@ class Worker:
         self._result_writer: asyncio.StreamWriter | None = None
         self._results: list[np.ndarray] = []
         self._running = False
+        # coordinator contact info (set before ``register()`` / ``run_reconnect_loop()``)
+        self.coordinator_host: str = "127.0.0.1"
+        self.coordinator_port: int = 0
 
     # ------------------------------------------------------------------
 
     async def start(self) -> int:
+        # remember the event loop this worker runs on so that clients
+        # (DistributedEngine) can schedule ``generate`` on the same loop
+        # the transport server tasks use -- cross-loop queue traffic
+        # deadlocks because queue feeds and consumers wake each other
+        # through the same loop
+        self.loop: asyncio.AbstractEventLoop = asyncio.get_running_loop()
         self._running = True
         srv = await asyncio.start_server(self._handle_control, self.control_host, self.control_port)
         self._server = srv
@@ -106,6 +116,68 @@ class Worker:
                 await writer.drain()
         except (ConnectionResetError, asyncio.IncompleteReadError):
             pass
+
+    async def _register(self, node_id: str) -> bool:
+        """Send ``hello`` to the coordinator and return True on ``welcome``.
+
+        Used both for the initial registration and by
+        ``run_reconnect_loop`` when the coordinator restarts."""
+        try:
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(self.coordinator_host, self.coordinator_port), timeout=5.0
+            )
+            try:
+                msg = Msg(
+                    type="hello",
+                    payload={
+                        "node_id": node_id,
+                        "host": self.coordinator_host,
+                        "port": self.control_port,
+                        "devices": [d.to_dict() for d in self.backend.detect_devices()],
+                        "backend": self.backend.name,
+                        "model_hash": getattr(
+                            self.spec, "model_hash", f"model:{self.spec.num_layers}:{self.spec.hidden_size}"
+                        ),
+                        "spec": {
+                            "num_layers": self.spec.num_layers,
+                            "hidden_size": self.spec.hidden_size,
+                        },
+                    },
+                    src=node_id,
+                )
+                writer.write((json.dumps(msg.to_dict()) + "\n").encode())
+                await writer.drain()
+                line = await asyncio.wait_for(reader.readline(), timeout=10.0)
+                if not line:
+                    return False
+                resp = Msg.from_dict(json.loads(line))
+                log.info("worker %s: register with coordinator -> %s", node_id, resp.type)
+                return resp.type == "welcome"
+            finally:
+                writer.close()
+                try:
+                    await writer.wait_closed()
+                except Exception:
+                    pass
+        except Exception as exc:
+            log.warning("worker %s: coordinator unreachable: %s", node_id, exc)
+            return False
+
+    async def run_reconnect_loop(self) -> None:
+        """Fault tolerance: when the coordinator crashes or the network
+        partition heals, keep retrying with exponential backoff until the
+        worker is told to shut down (``self._running``) or registration
+        succeeds.
+
+        Note: ``register()`` should be called once before starting this
+        loop; ``run_reconnect_loop`` handles the *recovery* path."""
+        await reconnect_loop(
+            self.node_id,
+            self._register,
+            self.coordinator_host,
+            self.coordinator_port,
+            running_predicate=lambda: self._running,
+        )
 
     async def _dispatch(self, msg: Msg) -> Msg:
         if msg.type == "plan":

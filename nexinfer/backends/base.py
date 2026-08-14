@@ -27,6 +27,16 @@ class DeviceInfo:
     total_memory_bytes: int
     compute_score: float  # normalized throughput score from auto-benchmark
 
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "device_id": self.device_id,
+            "kind": self.kind.value if isinstance(self.kind, DeviceKind) else str(self.kind),
+            "vendor": self.vendor,
+            "name": self.name,
+            "total_memory_bytes": self.total_memory_bytes,
+            "compute_score": self.compute_score,
+        }
+
 
 @dataclass
 class ModelSpec:
@@ -41,11 +51,26 @@ class ModelSpec:
     inter_dim: int = 0
     dtype: str = "float16"
     quant: str | None = None  # e.g. "q4_k_m"
+    model_hash: str = ""  # set from weights fingerprint for same-model checks
 
     def bytes_per_layer(self) -> int:
         d = {"float32": 4, "float16": 2, "bfloat16": 2, "int8": 1, "int4": 0.5}[self.dtype]
         base = (self.hidden_size**2) * 4  # attention + gate/fc weight matrices
         return int(base * d) + self.inter_dim * self.hidden_size * d
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "num_layers": self.num_layers,
+            "hidden_size": self.hidden_size,
+            "num_attention_heads": self.num_attention_heads,
+            "num_kv_heads": self.num_kv_heads,
+            "head_dim": self.head_dim,
+            "vocab_size": self.vocab_size,
+            "inter_dim": self.inter_dim,
+            "dtype": self.dtype,
+            "quant": self.quant,
+            "model_hash": self.model_hash,
+        }
 
 
 @dataclass

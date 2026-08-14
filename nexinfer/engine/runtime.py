@@ -40,6 +40,15 @@ class Engine:
         self.tokenizer: Tokenizer | None = None
         self._generator: GenerationEngine | None = None
         self.status: EngineStatus | None = None
+        self.scheduler: Scheduler | None = None
+        # abort registry: request id -> the abort-flag list shared with the
+        # ``GenerationRequest`` it was created with. An HTTP cancel call
+        # flips the flag while the generation loop is running (abort-on-cancel).
+        self._abort_registry: dict[str, list[bool]] = {}
+
+    # EngineStatus carries ``profile`` and ``placement`` for the
+    # ``nexinfer profile`` command; the scheduler is also exposed so the
+    # HTTP layer can report queue depth without digging into the engine.
 
     # ------------------------------------------------------------------
 
@@ -81,6 +90,7 @@ class Engine:
         )
         self.backend = backend
         self.tokenizer = tok
+        self.scheduler = sched
         self._generator = GenerationEngine(backend, tok, sched, cache)
         self.status = EngineStatus(
             profile=system,
@@ -90,13 +100,42 @@ class Engine:
         )
         return self.status
 
+    def register(self, req: GenerationRequest) -> GenerationRequest:
+        """Register ``req`` for abort-on-cancel and return it for chaining.
+
+        Flipping the flag via ``engine.cancel(req.request_id)`` stops the
+        running generation with ``finish_reason="abort"``.
+        """
+        self._abort_registry[req.request_id] = req.abort_flag
+        return req
+
+    def cancel(self, request_id: str) -> bool:
+        """Cancel an in-flight generation by id. Idempotent; ``False`` when
+        the request is unknown or already finished."""
+        flag = self._abort_registry.get(request_id)
+        if flag is None:
+            return False
+        flag[0] = True
+        return True
+
     def generate(self, req: GenerationRequest) -> TokenOutput:
         self._require()
-        return self._generator.generate(req)
+        try:
+            return self._generator.generate(req)
+        finally:
+            self._abort_registry.pop(req.request_id, None)
 
     def generate_stream(self, req: GenerationRequest) -> Generator[TokenOutput, None, None]:
         self._require()
-        return self._generator.generate_stream(req)
+        try:
+            yield from self._generator.generate_stream(req)
+        finally:
+            self._abort_registry.pop(req.request_id, None)
+
+    @property
+    def queue_depth(self) -> int:
+        """Waiting-queue depth exposed to the HTTP ``/v1/status`` endpoint."""
+        return self.scheduler.num_waiting if self.scheduler is not None else 0
 
     # ------------------------------------------------------------------
 

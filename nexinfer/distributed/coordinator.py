@@ -24,6 +24,7 @@ import time
 from collections.abc import Callable
 
 from nexinfer.backends.base import DeviceInfo, ModelSpec
+from nexinfer.distributed.health import DEFAULT_HEARTBEAT_TIMEOUT_S, HealthMonitor
 from nexinfer.distributed.messages import Msg
 from nexinfer.distributed.planner import ClusterPlan, NodeSpec, automatic, plan_pipeline, plan_tensor
 from nexinfer.engine.profiler import SystemProfile
@@ -45,6 +46,7 @@ class Coordinator:
         port: int = 0,
         manual_peers: list[str] | None = None,
         preferred_mode: str | None = None,
+        heartbeat_timeout: float = DEFAULT_HEARTBEAT_TIMEOUT_S,
     ) -> None:
         self.node_id = node_id
         self.spec = spec
@@ -56,8 +58,19 @@ class Coordinator:
         self.nodes: dict[str, NodeSpec] = {}
         self.plan: ClusterPlan | None = None
         self._server: asyncio.AbstractServer | None = None
+        self._azc = None  # AsyncZeroconf instance or None
         self._last_heartbeat: dict[str, float] = {}
         self._on_plan_ready: Callable | None = None
+        # fault tolerance: the health monitor declares nodes dead after
+        # ``heartbeat_timeout`` seconds of silence and triggers replanning
+        self.heartbeat_timeout: float = heartbeat_timeout
+        self._health = HealthMonitor(timeout=heartbeat_timeout)
+        self._health.set_on_node_dead(self._on_node_dead)
+        self._health.record(self.node_id)  # root is always alive
+
+    @property
+    def health_monitor(self) -> HealthMonitor:
+        return self._health
 
     # ------------------------------------------------------------------
 
@@ -75,38 +88,68 @@ class Coordinator:
         self._last_heartbeat[self.node_id] = time.time()  # root counts itself as live
         await self.transport.start_server(self.host, self.port + 1000, on_peer=self._peer_connected)
         await self._announce_mdns()
-        log.info("coordinator %s on port %d", self.node_id, self.port)
+        # refresh the root's heartbeat AFTER startup so a slow mDNS announce
+        # (or any other init work) cannot age the root node out of the
+        # liveness window before the first health tick runs
+        self._health.record(self.node_id)
+        self._last_heartbeat[self.node_id] = time.time()
+        await self._health.start()  # begin heartbeat-loss detection
+        log.info(
+            "coordinator %s on port %d (heartbeat timeout %.0fs)",
+            self.node_id,
+            self.port,
+            self.heartbeat_timeout,
+        )
         return self.port
 
     async def _announce_mdns(self) -> None:
+        # mDNS is discovery-only; a slow/broken announce must never stall
+        # coordinator startup, so it runs with a hard timeout and is
+        # abandoned on failure (manual peers / WebRTC stay fully usable).
         try:
             import socket
 
-            from zeroconf import ServiceInfo, Zeroconf
+            from zeroconf import ServiceInfo
+            from zeroconf.asyncio import AsyncZeroconf
 
-            zc = Zeroconf()
-            info = ServiceInfo(
-                SERVICE_TYPE,
-                f"nexinfer-{self.node_id}.{SERVICE_TYPE}",
-                addresses=[socket.inet_aton("127.0.0.1")],
-                port=self.port,
-                properties={"node_id": self.node_id},
-            )
-            zc.register_service(info)
+            async def _do() -> None:
+                azc = AsyncZeroconf()
+                info = ServiceInfo(
+                    SERVICE_TYPE,
+                    f"nexinfer-{self.node_id}.{SERVICE_TYPE}",
+                    addresses=[socket.inet_aton("127.0.0.1")],
+                    port=self.port,
+                    properties={"node_id": self.node_id},
+                )
+                try:
+                    await azc.async_register_service(info)
+                    self._azc = azc
+                except Exception:
+                    await azc.async_close()
+                    raise
+
+            await asyncio.wait_for(_do(), timeout=3.0)
         except Exception as exc:
             log.debug("mDNS announce failed (non-fatal): %s", exc)
+            self._azc = None
 
     def _peer_connected(self, peer: str) -> None:
         log.info("peer connected: %s", peer)
 
     async def _handle_control(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        peer = writer.get_extra_info("peername")
+        log.debug("control connection from %s", peer)
         try:
             while True:
                 line = await reader.readline()
                 if not line:
                     return
                 msg = Msg.from_dict(json.loads(line))
-                resp = await self._dispatch(msg)
+                try:
+                    resp = await self._dispatch(msg)
+                except Exception:  # never kill the control channel on a bad message
+                    log.exception("control message dispatch failed (continuing)")
+                    continue
                 writer.write((json.dumps(resp.to_dict()) + "\n").encode())
                 await writer.drain()
         except (ConnectionResetError, asyncio.IncompleteReadError):
@@ -117,7 +160,7 @@ class Coordinator:
             devices = [
                 DeviceInfo(
                     device_id=d.get("device_id", "/cpu:0"),
-                    kind=DeviceKind(d.get("kind", "/cpu"))
+                    kind=DeviceKind(d.get("kind", DeviceKind.CPU.value))
                     if isinstance(d.get("kind"), str)
                     else d.get("kind", DeviceKind.CPU),
                     vendor=d.get("vendor", "generic"),
@@ -138,22 +181,70 @@ class Coordinator:
             )
             self.nodes[node.node_id] = node
             self._last_heartbeat[node.node_id] = time.time()
+            self._health.record(node.node_id)  # keep fault-tolerance state in sync
             await self._replan()
             return Msg(type="welcome", payload={"node_id": self.node_id}, src=self.node_id)
         if msg.type == "heartbeat":
+            log.debug("coordinator heartbeat from %s", msg.src)
             self._last_heartbeat[msg.src] = time.time()
+            self._health.record(msg.src)
             return Msg(type="heartbeat_ack", src=self.node_id)
+        if msg.type == "leave":
+            # graceful departure: do NOT count as a crash, just drop the node
+            self._last_heartbeat.pop(msg.src, None)
+            self._health.forget(msg.src)
+            self.nodes.pop(msg.src, None)
+            await self._replan()
+            return Msg(type="leave_ack", src=self.node_id)
+        if msg.type == "cluster_status":
+            alive = {n: self._health.is_alive(n) for n in self._last_heartbeat}
+            return Msg(
+                type="cluster_status",
+                payload={
+                    "alive": {n: v for n, v in alive.items() if v},
+                    "dead": sorted(self._health.dead_nodes),
+                    "timeout": self.heartbeat_timeout,
+                },
+                src=self.node_id,
+            )
         return Msg(type="error", payload={"message": f"unknown {msg.type}"}, src=self.node_id)
+
+    async def _on_node_dead(self, node_id: str) -> None:
+        """HealthMonitor callback: a worker stopped heartbeating.
+
+        Its layers are redistributed over the surviving nodes by
+        rebuilding the cluster plan; any in-flight tensor for the dead
+        node will fail at transport level and the engine bubbles a
+        clear ``dist_worker_dead`` error up to the client."""
+        log.error("coordinator: node %s lost; re-planning cluster", node_id)
+        self._last_heartbeat.pop(node_id, None)
+        await self._replan()
+
+    async def send_leave(self, node_id: str) -> None:
+        """Graceful shutdown helper -- ask the coordinator to drop us."""
+        # best-effort: fire and forget
+        try:
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(self.host, self.port), timeout=3.0
+            )
+            writer.write((json.dumps(Msg(type="leave", src=node_id).to_dict()) + "\n").encode())
+            await writer.drain()
+            writer.close()
+        except Exception as exc:
+            log.debug("leave request failed (non-fatal): %s", exc)
 
     # ------------------------------------------------------------------
 
     async def _replan(self) -> None:
         """Recompute the cluster plan whenever membership changes."""
-        members = [n for n, t in self._last_heartbeat.items() if time.time() - t < 30.0 and n != self.node_id]
+        members = [n for n in self._last_heartbeat if self._health.is_alive(n) and n != self.node_id]
         nodes = [self.nodes[n] for n in members]
-        if len(nodes) < 2:
+        if not nodes:
             self.plan = None
             return
+        # A single surviving worker still gets a plan (all layers on one
+        # node) so a crash never leaves the cluster with ``plan=None`` when
+        # compute capacity remains.
         # ``preferred_mode`` overrides the automatic heuristic (``None`` means
         # automatic: PP for heterogeneous clusters, TP for homogeneous ones)
         if self.preferred_mode == "pipeline_parallel":
@@ -196,6 +287,12 @@ class Coordinator:
             return Msg(type="error", payload={"message": str(exc)}, src=self.node_id)
 
     async def close(self) -> None:
+        await self._health.stop()
+        if self._azc is not None:
+            try:
+                await self._azc.async_close()
+            except Exception:
+                pass
         if self._server:
             self._server.close()
         await self.transport.close()

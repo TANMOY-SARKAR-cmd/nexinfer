@@ -51,6 +51,10 @@ class GenerationRequest:
     agent_id: str | None = None  # binds the request to an agent / memory branch
     skill: str | None = None  # skills bundle name
     stream: bool = False
+    # abort-on-cancel: flip to ``True`` externally (e.g. an HTTP client
+    # disconnecting or an explicit cancel endpoint); the generation loop
+    # checks it each decode step and stops with ``finish_reason="abort"``
+    abort_flag: list[bool] = field(default_factory=lambda: [False])
 
 
 @dataclass

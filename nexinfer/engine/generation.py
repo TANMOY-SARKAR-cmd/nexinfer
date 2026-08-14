@@ -65,6 +65,15 @@ class GenerationEngine:
 
         n_tokens = 0
         while True:
+            if req.abort_flag and req.abort_flag[0]:
+                self.scheduler.finish(req.request_id)
+                self.kv_cache.free(req.request_id)
+                yield TokenOutput(
+                    text="",
+                    finish_reason="abort",
+                    usage={"prompt_tokens": int(input_ids.size), "completion_tokens": n_tokens},
+                )
+                return
             tok_id = sample_token(logits, req, rr.input_ids, rng)
             text = self.tokenizer.decode([tok_id])
             rr.append(tok_id, text)

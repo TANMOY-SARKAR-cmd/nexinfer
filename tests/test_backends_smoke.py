@@ -76,15 +76,9 @@ def test_ggml_prefill_decode_batch():
     """
     pytest.importorskip("llama_cpp")
     from nexinfer.backends.ggml_backend import GGMLBackend
+    from tests.gguf_fixtures import gguf_path
 
-    gguf = os.environ.get(
-        "GGUF_MODEL_PATH",
-        os.path.expanduser(
-            "~/models/.cache/models--bartowski--SmolLM2-135M-Instruct-GGUF/"
-            "snapshots/09816acd5d99df7be770d85ea30822623dab342c/"
-            "SmolLM2-135M-Instruct-Q4_K_M.gguf"
-        ),
-    )
+    gguf = gguf_path() or ""
     if not os.path.exists(gguf):
         pytest.skip("demo GGUF not available")
 
