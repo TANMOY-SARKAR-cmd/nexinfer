@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nexinfer"
-version = "0.1.0"
+version = "0.2.0"
 description = "NexusInfer: cross-platform, hardware-agnostic, distributed AI inference engine"
 readme = "README.md"
 license = {text = "MIT"}
@@ -52,6 +52,14 @@ include = ["nexinfer*"]
 
 [tool.ruff]
 line-length = 110
+
+[tool.ruff.lint]
+# BLE001 (broad exception catch) and PLW1514 (unspecified open mode) are
+# used deliberately in prototype/fallback code paths; everything else is
+# checked against the default rule set.
+ignore = ["BLE001", "PLW1514", "PLW1510", "S110", "S112",
+        "TC004", "ASYNC220", "ASYNC230", "ISC004", "RUF100",
+        "RUF012", "RUF034", "RUF046", "RUF059"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

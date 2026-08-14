@@ -17,7 +17,6 @@ against that constraint.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
 
 from nexinfer.backends.base import DeviceInfo, ModelSpec
 from nexinfer.engine.types import ParallelMode, ParallelPlan

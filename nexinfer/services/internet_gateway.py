@@ -24,10 +24,8 @@ Tool schema returned for function calling::
 from __future__ import annotations
 
 import html
-import json
 import logging
 import re
-import threading
 import time
 import urllib.parse
 import urllib.request
@@ -77,7 +75,11 @@ class InternetGateway:
                 "type": "object",
                 "properties": {
                     "url": {"type": "string", "description": "URL to fetch (https preferred)"},
-                    "max_tokens": {"type": "integer", "description": "Maximum output length", "default": 2000},
+                    "max_tokens": {
+                        "type": "integer",
+                        "description": "Maximum output length",
+                        "default": 2000,
+                    },
                 },
                 "required": ["url"],
             },
@@ -87,7 +89,7 @@ class InternetGateway:
         future = self._pool.submit(self._fetch_sync, url, max_tokens, agent_id)
         try:
             return future.result(timeout=self.policy.timeout_seconds + 10)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             return {"error": f"web_fetch failed: {exc}", "url": url}
 
     def _fetch_sync(self, url: str, max_tokens: int, agent_id: str | None) -> dict[str, Any]:
@@ -97,7 +99,10 @@ class InternetGateway:
             self._check_policy(parsed, agent_id)
             req = urllib.request.Request(
                 url,
-                headers={"User-Agent": DEFAULT_USER_AGENT, "Accept": "text/html,text/plain,application/json,*/*"},
+                headers={
+                    "User-Agent": DEFAULT_USER_AGENT,
+                    "Accept": "text/html,text/plain,application/json,*/*",
+                },
             )
             with urllib.request.urlopen(req, timeout=self.policy.timeout_seconds) as resp:
                 data = resp.read(self.policy.max_response_bytes)
@@ -111,7 +116,7 @@ class InternetGateway:
         except urllib.error.HTTPError as exc:
             entry["status"] = f"http_{exc.code}"
             return {"error": f"HTTP {exc.code}", "url": url}
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             entry["status"] = "error"
             entry["error"] = str(exc)
             return {"error": str(exc), "url": url}
@@ -154,10 +159,11 @@ class InternetGateway:
 # ----------------------------------------------------------------------
 # HTML -> text helpers (no external deps)
 
+
 def _strip_tags(s: str) -> str:
-    s = re.sub(r"<(script|style|noscript)[\s\S]*?</\1>", " ", s, flags=re.I)
-    s = re.sub(r"<br\s*/?>", "\n", s, flags=re.I)
-    s = re.sub(r"</p>|</div>|</h[1-6]>|</li>|</tr>", "\n", s, flags=re.I)
+    s = re.sub(r"<(script|style|noscript)[\s\S]*?</\1>", " ", s, flags=re.IGNORECASE)
+    s = re.sub(r"<br\s*/?>", "\n", s, flags=re.IGNORECASE)
+    s = re.sub(r"</p>|</div>|</h[1-6]>|</li>|</tr>", "\n", s, flags=re.IGNORECASE)
     s = re.sub(r"<[^>]+>", " ", s)
     return html.unescape(s)
 

@@ -35,7 +35,7 @@ def is_rdma_capable() -> bool:
         r = subprocess.run(["rdma", "link"], capture_output=True, text=True, timeout=3.0)
         out = r.stdout.lower()
         return "roce" in out or "infiniband" in out
-    except Exception:  # noqa: BLE001
+    except Exception:
         return False
 
 

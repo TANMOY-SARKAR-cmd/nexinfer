@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Optional
 
 import numpy as np
 
@@ -34,7 +33,7 @@ except ImportError:  # pragma: no cover
     _HAS_JAX = False
 
 try:
-    import pycoral  # type: ignore
+    import pycoral as _pycoral  # noqa: F401  # pycoral is optional (Edge TPU)
 
     _HAS_PYCORAL = False  # pycoral import success depends on build; default off
 except ImportError:  # pragma: no cover
@@ -47,7 +46,7 @@ def _tpu_devices() -> list[int]:
     try:
         devices = [d for d in jax.devices() if d.platform == "tpu"]
         return list(range(len(devices)))
-    except Exception:  # noqa: BLE001
+    except Exception:
         return []
 
 
@@ -77,15 +76,14 @@ class TpuBackend(Backend):
         if os.environ.get("TPU_VISIBLE_CHIPS"):
             n = len([c for c in os.environ["TPU_VISIBLE_CHIPS"].split(",") if c.strip()])
             for i in range(max(1, n)):
-                out.append(DeviceInfo(f"/tpu:{i}", DeviceKind.TPU, "google",
-                                      f"TPU chip {i}", 16 * 1024 ** 3, 8.0))
+                out.append(
+                    DeviceInfo(f"/tpu:{i}", DeviceKind.TPU, "google", f"TPU chip {i}", 16 * 1024**3, 8.0)
+                )
             return out
         for i in _tpu_devices():
-            out.append(DeviceInfo(f"/tpu:{i}", DeviceKind.TPU, "google",
-                                  f"TPU chip {i}", 16 * 1024 ** 3, 8.0))
+            out.append(DeviceInfo(f"/tpu:{i}", DeviceKind.TPU, "google", f"TPU chip {i}", 16 * 1024**3, 8.0))
         if os.environ.get("TPU_NAME"):
-            out.append(DeviceInfo("/tpu:0", DeviceKind.TPU, "google",
-                                  "TPU (TPU_NAME)", 16 * 1024 ** 3, 8.0))
+            out.append(DeviceInfo("/tpu:0", DeviceKind.TPU, "google", "TPU (TPU_NAME)", 16 * 1024**3, 8.0))
         return out
 
     def load(self, model_path_or_id: str, spec: ModelSpec, devices: list[DeviceId]) -> None:
@@ -101,7 +99,6 @@ class TpuBackend(Backend):
     def _prefill_jax(self, input_ids: np.ndarray) -> np.ndarray:
         from jax import numpy as jnp
 
-        x = jnp.asarray(input_ids, dtype=jnp.int32)
         # placeholder transformer stack: real implementation swaps this for
         # the jit-compiled model graph (see docs/backend-authoring.md)
         vocab = self.spec.vocab_size if self.spec else 32000
@@ -112,7 +109,6 @@ class TpuBackend(Backend):
         return self._prefill_jax(input_ids)
 
     def decode(self, req_ids: list[str], input_ids: np.ndarray) -> np.ndarray:
-        from jax import numpy as jnp
 
         vocab = self.spec.vocab_size if self.spec else 32000
         return np.zeros((len(req_ids), vocab), dtype=np.float32)

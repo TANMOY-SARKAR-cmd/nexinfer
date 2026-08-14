@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Callable
+from collections.abc import Callable
 
 import numpy as np
 
@@ -118,8 +118,8 @@ class TCPTransport(Transport):
         if writer is None:
             # ``peer`` must be an address when no prior channel exists
             if ":" not in peer or peer.count(":") != 1:
-                # remote channel may still be completing its HELLO handshake;
-                # poll briefly before giving up
+                # peer is a channel key: poll briefly for a late HELLO
+                # handshake to register the writer under that key
                 for _ in range(50):
                     writer = self._writers.get(peer)
                     if writer is not None:
@@ -133,17 +133,25 @@ class TCPTransport(Transport):
                 writer.write(frame)
                 await writer.drain()
                 return
-            await self.connect(peer, key=peer)
-            writer = self._writers[peer]
+            # peer is an address with no prior channel: connect using the
+            # channel name so the remote side installs the queue under it
+            await self.connect(peer, key=name)
+            writer = self._writers[name]
         frame = TensorFrame.pack(name, arr)
         writer.write(frame)
         await writer.drain()
 
     async def recv(self, peer: str, timeout: float = 30.0) -> tuple[str, np.ndarray]:
-        q = self._queues.get(peer)
-        if q is None:
-            raise ConnectionError(f"no queue for peer {peer}; connect() first or wait for inbound")
-        return await asyncio.wait_for(q.get(), timeout)
+        deadline = asyncio.get_event_loop().time() + timeout
+        while True:
+            q = self._queues.get(peer)
+            if q is not None:
+                remaining = max(0.0, deadline - asyncio.get_event_loop().time())
+                return await asyncio.wait_for(q.get(), remaining)
+            remaining = max(0.0, deadline - asyncio.get_event_loop().time())
+            if remaining <= 0:
+                raise ConnectionError(f"no queue for peer {peer}; connect() first or wait for inbound")
+            await asyncio.sleep(0.05)
 
     async def close(self) -> None:
         if self._serve_task:

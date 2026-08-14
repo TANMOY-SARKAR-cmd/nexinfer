@@ -3,20 +3,16 @@ backends, generation, planner, transports, memory, services."""
 
 from __future__ import annotations
 
-import asyncio
-import json
 import os
-import shutil
 import tempfile
 
 import numpy as np
 import pytest
 
 from nexinfer.backends.base import DeviceInfo, ModelSpec
-from nexinfer.engine.types import DeviceKind
 from nexinfer.backends.cpu_numpy import NumpyBackend
 from nexinfer.backends.registry import available_backends, load_backend
-from nexinfer.backends.special_module import ReferenceModule, register_module, SpecialModuleBackend
+from nexinfer.backends.special_module import ReferenceModule, SpecialModuleBackend, register_module
 from nexinfer.distributed.planner import NodeSpec, automatic, plan_pipeline, plan_tensor
 from nexinfer.engine.kvcache import PagedKVCache
 from nexinfer.engine.orchestrator import plan_placement
@@ -25,7 +21,7 @@ from nexinfer.engine.runtime import Engine
 from nexinfer.engine.sampling import sample_token
 from nexinfer.engine.scheduler import Scheduler
 from nexinfer.engine.tokenizer_helper import MinimalBPE, Tokenizer
-from nexinfer.engine.types import GenerationRequest
+from nexinfer.engine.types import DeviceKind, GenerationRequest
 from nexinfer.gateway.tool_registry import ToolCaller, ToolRegistry
 from nexinfer.memory.fabric import MemoryFabric
 from nexinfer.memory.store import MemoryStore
@@ -35,8 +31,13 @@ from nexinfer.transports.base import TensorFrame
 from nexinfer.transports.tcp_transport import TCPTransport
 
 SPEC = ModelSpec(
-    num_layers=2, hidden_size=64, num_attention_heads=4, num_kv_heads=2,
-    head_dim=16, vocab_size=256, inter_dim=128,
+    num_layers=2,
+    hidden_size=64,
+    num_attention_heads=4,
+    num_kv_heads=2,
+    head_dim=16,
+    vocab_size=256,
+    inter_dim=128,
 )
 
 
@@ -65,8 +66,9 @@ def test_temperature_and_repetition_penalty():
 
 
 def test_kvcache_read_write():
-    cache = PagedKVCache(block_size=4, num_blocks_device=8, num_blocks_host=8,
-                         num_layers=2, num_kv_heads=2, head_dim=8)
+    cache = PagedKVCache(
+        block_size=4, num_blocks_device=8, num_blocks_host=8, num_layers=2, num_kv_heads=2, head_dim=8
+    )
     cache.ensure_sequence("r1", 7)
     k = np.arange(16, dtype=np.float16).reshape(2, 8)
     v = np.arange(16, 32, dtype=np.float16).reshape(2, 8)
@@ -82,8 +84,9 @@ def test_kvcache_read_write():
 
 def test_kvcache_blocks_stored_once_per_layer():
     """Blocks are shared across positions in the same layer; write/read round trip."""
-    cache = PagedKVCache(block_size=4, num_blocks_device=8, num_blocks_host=8,
-                         num_layers=2, num_kv_heads=2, head_dim=8)
+    cache = PagedKVCache(
+        block_size=4, num_blocks_device=8, num_blocks_host=8, num_layers=2, num_kv_heads=2, head_dim=8
+    )
     cache.ensure_sequence("r1", 4)
     k = np.ones((2, 8), dtype=np.float16)
     v = np.full((2, 8), 7, dtype=np.float16)
@@ -99,8 +102,9 @@ def test_kvcache_blocks_stored_once_per_layer():
 
 
 def test_kvcache_spill():
-    cache = PagedKVCache(block_size=4, num_blocks_device=4, num_blocks_host=4,
-                         num_layers=1, num_kv_heads=1, head_dim=4)
+    cache = PagedKVCache(
+        block_size=4, num_blocks_device=4, num_blocks_host=4, num_layers=1, num_kv_heads=1, head_dim=4
+    )
     cache.ensure_sequence("r1", 32)  # needs 8 blocks -> spills to host
     moved = cache.spill_cold_blocks(2)
     assert moved == 2
@@ -132,7 +136,8 @@ def test_scheduler_stop_conditions():
     rr.append(2, "END")
     assert rr.should_stop() == "stop"
     rr2 = RunningRequest(req=GenerationRequest(prompt="x", max_tokens=2))
-    rr2.append(1, "a"); rr2.append(2, "b")
+    rr2.append(1, "a")
+    rr2.append(2, "b")
     assert rr2.should_stop() == "length"
 
 
@@ -184,9 +189,13 @@ def test_generation_e2e():
     be.load("demo-model-xyz", SPEC, ["/cpu:0"])
     tok = Tokenizer(MinimalBPE(vocab_size=SPEC.vocab_size))
     sched = Scheduler(device_blocks=64, host_blocks=256)
-    cache = PagedKVCache(num_blocks_device=64, num_blocks_host=256,
-                         num_layers=SPEC.num_layers, num_kv_heads=SPEC.num_kv_heads,
-                         head_dim=SPEC.head_dim)
+    cache = PagedKVCache(
+        num_blocks_device=64,
+        num_blocks_host=256,
+        num_layers=SPEC.num_layers,
+        num_kv_heads=SPEC.num_kv_heads,
+        head_dim=SPEC.head_dim,
+    )
     from nexinfer.engine.generation import GenerationEngine
 
     gen = GenerationEngine(be, tok, sched, cache)
@@ -201,13 +210,18 @@ def test_generation_stop_sequence():
     be.load("demo-model-xyz", SPEC, ["/cpu:0"])
     tok = Tokenizer(MinimalBPE(vocab_size=SPEC.vocab_size))
     sched = Scheduler(device_blocks=64, host_blocks=256)
-    cache = PagedKVCache(num_blocks_device=64, num_blocks_host=256,
-                         num_layers=SPEC.num_layers, num_kv_heads=SPEC.num_kv_heads,
-                         head_dim=SPEC.head_dim)
+    cache = PagedKVCache(
+        num_blocks_device=64,
+        num_blocks_host=256,
+        num_layers=SPEC.num_layers,
+        num_kv_heads=SPEC.num_kv_heads,
+        head_dim=SPEC.head_dim,
+    )
     from nexinfer.engine.generation import GenerationEngine
 
     gen = GenerationEngine(be, tok, sched, cache)
     out = gen.generate(GenerationRequest(prompt="hello", max_tokens=100, stop_sequences=["END"]))
+    assert out
     be.close()
 
 
@@ -221,11 +235,11 @@ def test_profiler_detects_cpu():
 
 
 def test_placement_cpu_only(monkeypatch):
-    monkeypatch.setattr("nexinfer.engine.profiler._detect_nvidia", lambda: [])
-    monkeypatch.setattr("nexinfer.engine.profiler._detect_amd", lambda: [])
-    monkeypatch.setattr("nexinfer.engine.profiler._detect_intel", lambda: [])
-    monkeypatch.setattr("nexinfer.engine.profiler._detect_tpu", lambda: [])
-    monkeypatch.setattr("nexinfer.engine.profiler._detect_windows_dxgi", lambda: [])
+    monkeypatch.setattr("nexinfer.engine.profiler._detect_nvidia", list)
+    monkeypatch.setattr("nexinfer.engine.profiler._detect_amd", list)
+    monkeypatch.setattr("nexinfer.engine.profiler._detect_intel", list)
+    monkeypatch.setattr("nexinfer.engine.profiler._detect_tpu", list)
+    monkeypatch.setattr("nexinfer.engine.profiler._detect_windows_dxgi", list)
     system = SystemProfile.from_system()
     plan = plan_placement(SPEC, system)
     assert plan.strategy == "cpu_only"
@@ -235,8 +249,14 @@ def test_placement_cpu_only(monkeypatch):
 def test_placement_gpu_hybrid():
     system = SystemProfile.from_system()
     # pretend we have a small GPU (128 MB) -> hybrid split
-    tiny_gpu = DeviceInfo(device_id="/gpu:nvidia:0", kind=DeviceKind.GPU_NVIDIA, vendor="nvidia",
-                          name="TinyGPU", total_memory_bytes=128 * 1024 * 1024, compute_score=0.1)
+    tiny_gpu = DeviceInfo(
+        device_id="/gpu:nvidia:0",
+        kind=DeviceKind.GPU_NVIDIA,
+        vendor="nvidia",
+        name="TinyGPU",
+        total_memory_bytes=128 * 1024 * 1024,
+        compute_score=0.1,
+    )
     system.devices.append(tiny_gpu)
     plan = plan_placement(SPEC, system, kv_cache_target_tokens=256)
     assert plan.strategy in ("hybrid_split", "gpu_only", "cpu_only")
@@ -262,8 +282,36 @@ def test_tensor_plan():
 
 def test_automatic_heterogeneous_uses_pp():
     nodes = [
-        NodeSpec("n0", "10.0.0.0", 9000, devices=[DeviceInfo(device_id="/cpu:0", kind=DeviceKind.CPU, vendor="generic", name="CPU", total_memory_bytes=0, compute_score=1.0)]),
-        NodeSpec("n1", "10.0.0.1", 9000, devices=[DeviceInfo(device_id="/gpu:nvidia:0", kind=DeviceKind.GPU_NVIDIA, vendor="nvidia", name="GPU", total_memory_bytes=8 << 30, compute_score=4.0)]),
+        NodeSpec(
+            "n0",
+            "10.0.0.0",
+            9000,
+            devices=[
+                DeviceInfo(
+                    device_id="/cpu:0",
+                    kind=DeviceKind.CPU,
+                    vendor="generic",
+                    name="CPU",
+                    total_memory_bytes=0,
+                    compute_score=1.0,
+                )
+            ],
+        ),
+        NodeSpec(
+            "n1",
+            "10.0.0.1",
+            9000,
+            devices=[
+                DeviceInfo(
+                    device_id="/gpu:nvidia:0",
+                    kind=DeviceKind.GPU_NVIDIA,
+                    vendor="nvidia",
+                    name="GPU",
+                    total_memory_bytes=8 << 30,
+                    compute_score=4.0,
+                )
+            ],
+        ),
     ]
     plan = automatic(nodes, SPEC)
     assert plan.mode.value == "pipeline_parallel"
@@ -293,6 +341,8 @@ async def test_tcp_transport_roundtrip():
     np.testing.assert_array_equal(ack_arr, np.array([9, 9], dtype=np.int32))
     await t1.close()
     await t2.close()
+
+
 def test_tensor_frame_pack_unpack():
     arr = np.random.default_rng(0).standard_normal((3, 5)).astype(np.float16)
     frame = TensorFrame.pack("hello", arr)
@@ -380,6 +430,7 @@ def test_fabric_sync_roundtrip():
 # Internet gateway
 
 
+@pytest.mark.network
 def test_internet_gateway_allowed_fetch():
     gw = InternetGateway()
     res = gw.call("https://example.com", max_tokens=50)
@@ -441,8 +492,7 @@ def test_tool_registry_builtins():
         assert reg.get_schema("web_fetch")["name"] == "web_fetch"
         caller = ToolCaller(reg, mcp_clients={})
         fabric.create_store("notes", kind="shared", owners=["*"])
-        r = caller.call("memory_write", {"store": "notes", "branch": "main",
-                                         "key": "x", "value": "1"})
+        r = caller.call("memory_write", {"store": "notes", "branch": "main", "key": "x", "value": "1"})
         assert "commit" in r
         r2 = caller.call("memory_read", {"store": "notes", "branch": "main", "key": "x"})
         assert r2["value"] == "1"
@@ -480,11 +530,11 @@ def test_register_custom_module():
 
 
 def test_engine_bootstrap(monkeypatch):
-    monkeypatch.setattr("nexinfer.engine.profiler._detect_nvidia", lambda: [])
-    monkeypatch.setattr("nexinfer.engine.profiler._detect_amd", lambda: [])
-    monkeypatch.setattr("nexinfer.engine.profiler._detect_intel", lambda: [])
-    monkeypatch.setattr("nexinfer.engine.profiler._detect_tpu", lambda: [])
-    monkeypatch.setattr("nexinfer.engine.profiler._detect_windows_dxgi", lambda: [])
+    monkeypatch.setattr("nexinfer.engine.profiler._detect_nvidia", list)
+    monkeypatch.setattr("nexinfer.engine.profiler._detect_amd", list)
+    monkeypatch.setattr("nexinfer.engine.profiler._detect_intel", list)
+    monkeypatch.setattr("nexinfer.engine.profiler._detect_tpu", list)
+    monkeypatch.setattr("nexinfer.engine.profiler._detect_windows_dxgi", list)
     engine = Engine()
     st = engine.bootstrap("demo", SPEC, backend_name="cpu_numpy")
     assert st.placement.strategy == "cpu_only"

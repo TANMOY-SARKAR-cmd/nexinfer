@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Optional
 
 import numpy as np
 
@@ -52,6 +51,11 @@ class NumpyBackend(Backend):
         self.params: dict[str, np.ndarray] = {}
         self._kv: dict[str, tuple[list[np.ndarray], list[np.ndarray]]] = {}
         self._rng = np.random.default_rng(0)
+        # pipeline-parallel layer slice this rank owns: (start, end)
+        # (0, num_layers) = full local inference; intermediate PP ranks
+        # skip the embedding/lm-head and only run their assigned layers.
+        self._layer_range: tuple[int, int] | None = None
+        self._pp_mode = False
 
     # ------------------------------------------------------------------
     def capabilities(self) -> BackendCapabilities:
@@ -62,6 +66,20 @@ class NumpyBackend(Backend):
             supports_tool_calls=False,
             supports_pipeline_parallel=True,
             supports_tensor_parallel=False,
+        )
+
+    def offload_layers(self, layers: list[tuple[int, int]]) -> None:
+        """Assign this rank's layer slice (used by pipeline parallelism)."""
+        if not layers:
+            return
+        start, end = layers[0]
+        self._layer_range = (max(0, start), min(self.spec.num_layers if self.spec else end, end))
+        self._pp_mode = self._layer_range != (0, (self.spec.num_layers if self.spec else 0))
+        log.info(
+            "cpu_numpy rank slice: layers %d-%d (pp=%s)",
+            self._layer_range[0],
+            self._layer_range[1],
+            self._pp_mode,
         )
 
     def detect_devices(self) -> list[DeviceInfo]:
@@ -99,34 +117,100 @@ class NumpyBackend(Backend):
     # ------------------------------------------------------------------
 
     def prefill(self, req_id: str, input_ids: np.ndarray) -> np.ndarray:
+        """Forward pass honoring the PP layer slice.
+
+        Local (root rank) prefill: embed -> all layers -> lm head, caches KV.
+        Intermediate PP rank: the *activations* ``input_ids`` arrive as a
+        hidden-state tensor (shape ``(1, hidden)``); this rank runs only its
+        assigned layers and emits activations (or logits when it is the
+        final rank). Root rank may also be called with a hidden-state tensor
+        by ``generate()`` for the first decode step; a 1D tensor with length
+        ``== hidden_size`` is treated as activations."""
         spec = self.spec
         assert spec is not None, "backend not loaded"
+        ids = np.asarray(input_ids)
+        start, end = self._layer_range or (0, spec.num_layers)
+        # A tensor shaped (seq, hidden_size) or a 1D tensor of size hidden_size
+        # is treated as activations handed to us by a peer rank (otherwise:
+        # token ids to embed). This is what lets intermediate PP ranks run
+        # only their assigned layer slice while the full context travels
+        # across the wire.
+        is_activations = (ids.ndim == 2 and ids.shape[1] == spec.hidden_size) or (
+            ids.ndim == 1 and ids.size > 0 and ids.size % spec.hidden_size == 0
+        )
+        if is_activations:
+            x = (
+                ids.astype(np.float32)
+                if ids.ndim == 2
+                else ids.astype(np.float32).reshape(-1, spec.hidden_size)
+            )
+        else:
+            x = _embed(ids, self.params["wte"], spec.vocab_size)
+        if x.ndim == 1:
+            x = x.reshape(1, -1)
         k_all, v_all = [], []
-        x = _embed(input_ids, self.params["wte"], spec.vocab_size)
-        for i in range(spec.num_layers):
-            x, k, v = self._layer(x, i, input_ids.size, spec)
+        seq_len = x.shape[0]
+        for i in range(start, end):
+            x, k, v = self._layer(x, i, seq_len, spec)
             k_all.append(k)
             v_all.append(v)
         self._kv[req_id] = (k_all, v_all)
-        return self._lm_head(x)
+        if end == spec.num_layers:
+            return self._lm_head(x)
+        # intermediate rank: forward the full (seq, hidden) activation
+        # tensor flattened so the peer can reconstruct it
+        return x.reshape(-1)
 
     def decode(self, req_ids: list[str], input_ids: np.ndarray) -> np.ndarray:
-        """input_ids shape (n_req, 1); returns logits (n_req, vocab)."""
+        """input_ids shape (n_req, 1); returns logits (n_req, vocab).
+
+        With a PP slice set, ``input_ids`` rows are activation tensors
+        (shape ``(1, hidden_size)``) arriving from the previous rank;
+        intermediate ranks return their activations, only the final rank
+        returns logits."""
         spec = self.spec
         assert spec is not None, "backend not loaded"
+        start, end = self._layer_range or (0, spec.num_layers)
         outs = []
-        for req_id, tok in zip(req_ids, input_ids):
+        ids2 = np.asarray(input_ids)
+        # decode with a single (seq*hidden,) activations tensor: split rows
+        if ids2.ndim == 2 and ids2.shape[1] == spec.hidden_size:
+            activations = ids2.astype(np.float32)
+            decoded = []
+            for req_id, xa in zip(req_ids, activations):
+                k_all, v_all = self._kv[req_id]
+                new_ks, new_vs = [], []
+                for j, i in enumerate(range(start, end)):
+                    past_k = k_all[j]
+                    past_v = v_all[j]
+                    total_len = past_k.shape[0] + 1
+                    xa, k, v = self._layer(xa, i, total_len, spec, past_k=past_k, past_v=past_v)
+                    new_ks.append(k)
+                    new_vs.append(v)
+                self._kv[req_id] = (new_ks, new_vs)
+                decoded.append(self._lm_head(xa) if end == spec.num_layers else xa.reshape(-1))
+            return np.stack(decoded, axis=0)
+        for req_id, tok_row in zip(req_ids, input_ids):
             k_all, v_all = self._kv[req_id]
-            x = _embed(np.array([tok.item()]), self.params["wte"], spec.vocab_size)
-            x = x.reshape(1, spec.hidden_size)
             new_ks, new_vs = [], []
-            for i in range(spec.num_layers):
-                total_len = k_all[i].shape[0] + 1
-                x, k, v = self._layer(x, i, total_len, spec, past_k=k_all[i], past_v=v_all[i])
+            x = _embed(np.atleast_1d(tok_row), self.params["wte"], spec.vocab_size)
+            for i in range(start, end):
+                kv_off = i - start
+                past_k = k_all[kv_off]
+                past_v = v_all[kv_off]
+                total_len = past_k.shape[0] + 1
+                x, k, v = self._layer(x, i, total_len, spec, past_k=past_k, past_v=past_v)
                 new_ks.append(k)
                 new_vs.append(v)
             self._kv[req_id] = (new_ks, new_vs)
-            outs.append(self._lm_head(x))
+            if end == spec.num_layers:
+                outs.append(self._lm_head(x))
+            else:
+                outs.append(
+                    x.reshape(
+                        spec.hidden_size,
+                    )
+                )
         return np.concatenate(outs, axis=0)
 
     def close(self) -> None:
@@ -140,7 +224,7 @@ class NumpyBackend(Backend):
     def _lm_head(self, x: np.ndarray) -> np.ndarray:
         spec = self.spec
         x = _layernorm(x, self.params["ln_f"])
-        return x @ self.params["wte"].T * (spec.hidden_size ** -0.5)
+        return x @ self.params["wte"].T * (spec.hidden_size**-0.5)
 
     def _layer(
         self,
@@ -157,7 +241,7 @@ class NumpyBackend(Backend):
         q = a @ p[f"blk.{layer}.attn_wq"]
         k = a @ p[f"blk.{layer}.attn_wk"]
         v = a @ p[f"blk.{layer}.attn_wv"]
-        scale = spec.head_dim ** -0.5
+        scale = spec.head_dim**-0.5
         n_new = seq_len - past_k.shape[0] if past_k is not None else seq_len
         if past_k is not None:
             new_k = k.reshape(n_new, spec.num_kv_heads, spec.head_dim)
@@ -255,4 +339,6 @@ def _key_shape(key: str, spec: ModelSpec) -> tuple[int, ...]:
 
 
 def _random_weights(spec: ModelSpec, rng: np.random.Generator) -> dict[str, np.ndarray]:
-    return {k: rng.standard_normal(_key_shape(k, spec)).astype(np.float32) * 0.02 for k in _expected_keys(spec)}
+    return {
+        k: rng.standard_normal(_key_shape(k, spec)).astype(np.float32) * 0.02 for k in _expected_keys(spec)
+    }

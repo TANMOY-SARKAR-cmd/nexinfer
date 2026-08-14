@@ -16,10 +16,10 @@ from __future__ import annotations
 
 import asyncio
 import io
-import struct
 import logging
+import struct
 from abc import ABC, abstractmethod
-from typing import Callable
+from collections.abc import Callable
 
 import numpy as np
 
@@ -69,24 +69,19 @@ class Transport(ABC):
     name: str = "base"
 
     @abstractmethod
-    async def send(self, peer: str, name: str, arr: np.ndarray) -> None:
-        ...
+    async def send(self, peer: str, name: str, arr: np.ndarray) -> None: ...
 
     @abstractmethod
-    async def recv(self, peer: str, timeout: float = 30.0) -> tuple[str, np.ndarray]:
-        ...
+    async def recv(self, peer: str, timeout: float = 30.0) -> tuple[str, np.ndarray]: ...
 
     @abstractmethod
-    async def start_server(self, host: str, port: int, on_peer: Callable | None = None) -> None:
-        ...
+    async def start_server(self, host: str, port: int, on_peer: Callable | None = None) -> None: ...
 
     @abstractmethod
-    async def connect(self, peer: str) -> None:
-        ...
+    async def connect(self, peer: str) -> None: ...
 
     @abstractmethod
-    async def close(self) -> None:
-        ...
+    async def close(self) -> None: ...
 
     @staticmethod
     def available_transports() -> list[str]:

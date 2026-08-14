@@ -8,8 +8,8 @@ machine, pick backends, plan placement, load the model, and expose
 from __future__ import annotations
 
 import logging
+from collections.abc import Generator
 from dataclasses import dataclass
-from typing import Generator
 
 from nexinfer.backends.base import Backend, ModelSpec
 from nexinfer.backends.registry import available_backends, load_backend
@@ -57,7 +57,9 @@ class Engine:
         backend = backends[0]
         log.info(
             "placement: %s | backend: %s | strategy: %s",
-            placement.strategy, backend.name, placement.strategy,
+            placement.strategy,
+            backend.name,
+            placement.strategy,
         )
         try:
             backend.load(model, spec, [placement.root_device])

@@ -18,9 +18,8 @@ detection).
 from __future__ import annotations
 
 import logging
-import subprocess
 import shutil
-from typing import Optional
+import subprocess
 
 import numpy as np
 
@@ -42,9 +41,10 @@ def _detect_nvidia_gpus() -> list[tuple[int, str, float]]:
         return []
     try:
         r = subprocess.run(
-            ["nvidia-smi", "--query-gpu=index,name,memory.total",
-             "--format=csv,noheader,nounits"],
-            capture_output=True, text=True, timeout=3.0,
+            ["nvidia-smi", "--query-gpu=index,name,memory.total", "--format=csv,noheader,nounits"],
+            capture_output=True,
+            text=True,
+            timeout=3.0,
         )
         if r.returncode != 0:
             return []
@@ -55,7 +55,7 @@ def _detect_nvidia_gpus() -> list[tuple[int, str, float]]:
             mem_mb = float(parts[2]) if len(parts) > 2 else 0.0
             out.append((i, name, mem_mb))
         return out
-    except Exception:  # noqa: BLE001
+    except Exception:
         return []
 
 
@@ -83,8 +83,12 @@ class CudaBackend(Backend):
         for idx, name, mem_mb in _detect_nvidia_gpus():
             out.append(
                 DeviceInfo(
-                    f"/gpu:nvidia:{idx}", DeviceKind.GPU_NVIDIA, "nvidia",
-                    name, int(mem_mb * 1024 * 1024), mem_mb / 1024,
+                    f"/gpu:nvidia:{idx}",
+                    DeviceKind.GPU_NVIDIA,
+                    "nvidia",
+                    name,
+                    int(mem_mb * 1024 * 1024),
+                    mem_mb / 1024,
                 )
             )
         return out

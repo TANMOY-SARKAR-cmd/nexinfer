@@ -77,6 +77,28 @@ demo/             e2e_demo.py
 tests/            pytest suite covering every subsystem
 ```
 
+## Status / Reality Check
+
+NexusInfer is at **v0.2 prototype** level — the architecture is complete and the core
+execution paths are real, but it is not yet a hardened production system. Be
+explicit about what works today and what is still a template:
+
+| Area | Status |
+|---|---|
+| CPU reference backend (`cpu_numpy`) | **Functional** — full GQA attention, KV cache, paged cache, continuous batching; runs with demo weights or any compatible spec |
+| llama.cpp / GGUF backend (`ggml`) | **Functional** — real 4-bit quantized models (e.g. SmolLM2-135M) run on laptop CPUs; tested against SmolLM2-135M-Instruct-Q4_K_M |
+| ONNX Runtime backend (`ort`) | **Functional** — KV-cache and stateless models; includes a programmatic demo-model builder for CI without downloads |
+| OpenAI-compatible HTTP server | **Functional** — chat completions, streaming, models, health, and a `/metrics` Prometheus endpoint |
+| Chat templates, MCP, skills, internet gateway, git memory (incl. vector search) | **Functional** — covered by the pytest suite |
+| Distributed pipeline parallelism | **Architecture-complete and verified** — a real multi-process pipeline ring over TCP was tested end-to-end and produces token-identical output to the single-node reference |
+| CUDA / ROCm / DirectML / TPU / special-module | **Documented templates** — the interfaces and device-detection scaffolding exist so anyone can drop in the real runtime; real driver integration (cuBLAS, hipBLAS, OpenVINO, libtpu) is the main remaining engineering job |
+| RDMA / WebRTC transports | **Scaffolding + design** — TCP/gRPC transports are production-shaped; RDMA and WebRTC have the protocol layer written but not field-tested |
+| Multi-node multi-GPU production | **Not yet** — the cluster protocol works on homogeneous and heterogeneous CPU clusters; large-scale GPU deployment needs benchmarking, fault tolerance, and topology-aware placement |
+
+The CI workflow (GitHub Actions, Python 3.11 + 3.12) runs the linter and the
+full pytest suite on every push, so regressions in the functional paths are
+caught automatically.
+
 ## Documentation
 
 - [Architecture overview](docs/architecture.md) — the full design, module by module

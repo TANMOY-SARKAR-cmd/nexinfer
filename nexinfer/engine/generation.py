@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Generator
+from collections.abc import Generator
 
 import numpy as np
 
@@ -22,7 +22,9 @@ from nexinfer.engine.types import GenerationRequest, TokenOutput
 log = logging.getLogger("nexinfer.generation")
 
 # minimal function-call extraction: look for <function=Name>{json}</function
-TOOL_CALL_RE = re.compile(r"<function=([A-Za-z0-9_]+)>(.*?)</function|\[CALL:([A-Za-z0-9_]+)\]\s*(\{.*?\})", re.S)
+TOOL_CALL_RE = re.compile(
+    r"<function=([A-Za-z0-9_]+)>(.*?)</function|\[CALL:([A-Za-z0-9_]+)\]\s*(\{.*?\})", re.DOTALL
+)
 
 
 class GenerationEngine:
@@ -59,7 +61,7 @@ class GenerationEngine:
         logits = self.backend.prefill(req.request_id, input_ids)
         if logits.ndim > 1:
             logits = logits[-1]  # sample from the last position's distribution
-        rng = np.random.default_rng(hash(req.request_id) % (2 ** 31))
+        rng = np.random.default_rng(hash(req.request_id) % (2**31))
 
         n_tokens = 0
         while True:
@@ -107,8 +109,9 @@ def _extract_tool_calls(text: str, tools: list[dict]) -> list[dict]:
         if name in by_name:
             try:
                 import json
+
                 args = json.loads(raw_args.strip())
-            except Exception:  # noqa: BLE001
+            except Exception:
                 args = {"raw": raw_args.strip()}
             out.append({"name": name, "arguments": args})
     return out

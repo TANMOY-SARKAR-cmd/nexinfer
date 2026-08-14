@@ -17,12 +17,11 @@ import platform
 import shutil
 import subprocess
 from dataclasses import dataclass
-from typing import Any
 
 import numpy as np
 
 from nexinfer.backends.base import DeviceInfo
-from nexinfer.engine.types import DeviceId, DeviceKind
+from nexinfer.engine.types import DeviceKind
 
 log = logging.getLogger("nexinfer.profiler")
 
@@ -33,7 +32,7 @@ def _cmd(args: list[str], timeout: float = 3.0) -> str | None:
     try:
         r = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
         return r.stdout if r.returncode == 0 else None
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
 
 
@@ -52,15 +51,17 @@ def _detect_cpu() -> list[DeviceInfo]:
     elif platform.system() == "Windows":
         try:
             import ctypes
+
             total_ram = (ctypes.c_ulonglong(0)).value  # placeholder
             import ctypes.wintypes
+
             kb = ctypes.c_ulonglong(0)
             ctypes.windll.kernel32.GetPhysicallyInstalledSystemMemory(ctypes.byref(kb))  # type: ignore
             total_ram = kb.value * 1024
-        except Exception:  # noqa: BLE001
-            total_ram = 8 * 1024 ** 3
+        except Exception:
+            total_ram = 8 * 1024**3
     else:
-        total_ram = 8 * 1024 ** 3
+        total_ram = 8 * 1024**3
     return [
         DeviceInfo(
             device_id="/cpu:0",
@@ -114,7 +115,7 @@ def _detect_amd() -> list[DeviceInfo]:
                     vendor="amd",
                     name=info.get("Card series", key),
                     total_memory_bytes=vram_bytes,
-                    compute_score=vram_bytes / (1024 ** 3),
+                    compute_score=vram_bytes / (1024**3),
                 )
             )
     except (json.JSONDecodeError, KeyError, TypeError):
@@ -137,7 +138,7 @@ def _detect_intel() -> list[DeviceInfo]:
                         kind=DeviceKind.GPU_INTEL,
                         vendor="intel",
                         name="Intel Integrated Graphics",
-                        total_memory_bytes=4 * 1024 ** 3,  # shared memory; conservatively 4GB
+                        total_memory_bytes=4 * 1024**3,  # shared memory; conservatively 4GB
                         compute_score=1.0,
                     )
                 )
@@ -177,7 +178,7 @@ def _detect_tpu() -> list[DeviceInfo]:
                 kind=DeviceKind.TPU,
                 vendor="google",
                 name=f"TPU core {i}",
-                total_memory_bytes=16 * 1024 ** 3,
+                total_memory_bytes=16 * 1024**3,
                 compute_score=8.0,
             )
         )
@@ -188,10 +189,7 @@ def _detect_windows_dxgi() -> list[DeviceInfo]:
     """Windows-only generic GPU detection via a small PowerShell probe."""
     if platform.system() != "Windows":
         return []
-    script = (
-        "Get-CimInstance Win32_VideoController | Select-Object Name,AdapterRAM "
-        "| ConvertTo-Json"
-    )
+    script = "Get-CimInstance Win32_VideoController | Select-Object Name,AdapterRAM | ConvertTo-Json"
     out = _cmd(["powershell", "-NoProfile", "-Command", script])
     if not out:
         return []
@@ -242,13 +240,14 @@ def _microbench(dev: DeviceInfo, mat_size: int = 1024, seconds: float = 1.0) -> 
     a = rng.standard_normal((mat_size, mat_size)).astype(np.float32)
     b = rng.standard_normal((mat_size, mat_size)).astype(np.float32)
     import time
+
     t0 = time.perf_counter()
     n = 0
     while time.perf_counter() - t0 < seconds:
         a @ b
         n += 1
     elapsed = time.perf_counter() - t0
-    gflops = n * 2 * mat_size ** 3 / elapsed / 1e9
+    gflops = n * 2 * mat_size**3 / elapsed / 1e9
     return float(gflops)
 
 
@@ -260,13 +259,15 @@ class SystemProfile:
     gpu_vram_gb: float
 
     @classmethod
-    def from_system(cls, benchmark: bool = False) -> "SystemProfile":
+    def from_system(cls, benchmark: bool = False) -> SystemProfile:
         devices = profile_system(benchmark=benchmark)
         cpu = next((d for d in devices if d.kind == DeviceKind.CPU), None)
-        gpus = [d for d in devices if d.kind in (DeviceKind.GPU_NVIDIA, DeviceKind.GPU_AMD, DeviceKind.GPU_INTEL)]
+        gpus = [
+            d for d in devices if d.kind in (DeviceKind.GPU_NVIDIA, DeviceKind.GPU_AMD, DeviceKind.GPU_INTEL)
+        ]
         return cls(
             devices=devices,
             cpu_cores=os.cpu_count() or 1,
-            total_ram_gb=(cpu.total_memory_bytes / 1024 ** 3) if cpu else 0.0,
-            gpu_vram_gb=sum(d.total_memory_bytes for d in gpus) / 1024 ** 3,
+            total_ram_gb=(cpu.total_memory_bytes / 1024**3) if cpu else 0.0,
+            gpu_vram_gb=sum(d.total_memory_bytes for d in gpus) / 1024**3,
         )

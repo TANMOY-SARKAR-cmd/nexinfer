@@ -19,7 +19,7 @@ class McpConfig:
             try:
                 with open(CONFIG_PATH) as f:
                     self._data = json.load(f)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 self._data = {}
 
     def _save(self) -> None:

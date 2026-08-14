@@ -9,8 +9,7 @@ compacted, spilled to host RAM, or reassembled for offloading.
 from __future__ import annotations
 
 import threading
-from dataclasses import dataclass, field
-from typing import Optional
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -121,9 +120,7 @@ class PagedKVCache:
             idx, tier = self._alloc_block("device")
             seq[layer].append(idx)
             storage = self._storage_device if tier == "device" else self._storage_host
-            storage[idx] = np.zeros(
-                (2 * self.block_size, self.num_kv_heads, self.head_dim), dtype=self.dtype
-            )
+            storage[idx] = np.zeros((2 * self.block_size, self.num_kv_heads, self.head_dim), dtype=self.dtype)
 
     def write(self, req_id: str, layer: int, pos: int, k: np.ndarray, v: np.ndarray) -> None:
         """Write k/v for a single position (pos) into the right block."""

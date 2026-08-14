@@ -13,7 +13,6 @@ import importlib
 import logging
 import platform
 import sys
-from typing import Type
 
 from nexinfer.backends.base import Backend
 
@@ -32,10 +31,10 @@ BUILTIN_BACKENDS: dict[str, str] = {
     "special_module": "nexinfer.backends.special_module:SpecialModuleBackend",
 }
 
-_registry: dict[str, Type[Backend] | None] = {}  # name -> class (None = load failed)
+_registry: dict[str, type[Backend] | None] = {}  # name -> class (None = load failed)
 
 
-def _resolve_class(spec: str) -> Type[Backend]:
+def _resolve_class(spec: str) -> type[Backend]:
     """Import ``module.path:ClassName`` and return the class."""
     module_path, _, class_name = spec.partition(":")
     if not class_name:
@@ -47,7 +46,7 @@ def _resolve_class(spec: str) -> Type[Backend]:
     return cls
 
 
-def register(name: str, spec_or_cls: str | Type[Backend]) -> None:
+def register(name: str, spec_or_cls: str | type[Backend]) -> None:
     """Manually register a backend by name."""
     if isinstance(spec_or_cls, str):
         _registry[name] = _resolve_class(spec_or_cls)
@@ -60,9 +59,11 @@ def _discover_entrypoints() -> dict[str, str]:
     try:
         if sys.version_info >= (3, 12):
             from importlib.metadata import entry_points
+
             eps = entry_points(group="nexinfer.backends")
         else:
             from importlib.metadata import entry_points
+
             eps = entry_points().get("nexinfer.backends", [])  # type: ignore[union-attr]
         return {ep.name: f"{ep.module}:{ep.attr}" for ep in eps}
     except Exception as exc:  # pylint: disable=broad-except

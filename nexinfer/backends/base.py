@@ -15,7 +15,7 @@ from typing import Any
 
 import numpy as np
 
-from nexinfer.engine.types import DeviceId, GenerationRequest, TokenOutput, device_id, DeviceKind
+from nexinfer.engine.types import DeviceId, DeviceKind
 
 
 @dataclass
@@ -44,7 +44,7 @@ class ModelSpec:
 
     def bytes_per_layer(self) -> int:
         d = {"float32": 4, "float16": 2, "bfloat16": 2, "int8": 1, "int4": 0.5}[self.dtype]
-        base = (self.hidden_size ** 2) * 4  # attention + gate/fc weight matrices
+        base = (self.hidden_size**2) * 4  # attention + gate/fc weight matrices
         return int(base * d) + self.inter_dim * self.hidden_size * d
 
 
@@ -91,11 +91,9 @@ class Backend(ABC):
         """Batched single-token decode; return logits (len(req_ids), vocab)."""
         ...
 
-    def offload_layers(
-        self, layer_ranges: list[tuple[int, int]] | None
-    ) -> None:  # pylint: disable=unused-argument
+    def offload_layers(self, layer_ranges: list[tuple[int, int]] | None) -> None:  # pylint: disable=unused-argument
         """Move weight layers between devices (used by orchestrator)."""
-        return None
+        return
 
     def benchmark(self, device: DeviceId, seconds: float = 2.0) -> float:
         """Return a normalized throughput score for the device."""

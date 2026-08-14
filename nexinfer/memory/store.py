@@ -16,12 +16,24 @@ from __future__ import annotations
 import json
 import logging
 import os
-import subprocess
 import shutil
-from dataclasses import dataclass, field
+import subprocess
+from dataclasses import dataclass
 from typing import Any
 
+try:
+    import numpy as np  # noqa: F401 -- used by the vector-search methods
+
+    _HAS_NUMPY = True
+except ImportError:  # pragma: no cover
+    np = None  # type: ignore[assignment]
+    _HAS_NUMPY = False
 log = logging.getLogger("nexinfer.memory.store")
+
+# vector search requires numpy and at least one indexable entry; the
+# second condition is checked lazily in ``search`` but we expose it here
+# so callers can detect capability statically
+_has_vector_support = _HAS_NUMPY
 
 GIT = shutil.which("git") or "git"
 
@@ -94,8 +106,7 @@ class MemoryStore:
 
     # ------------------------------------------------------------------
 
-    def set(self, key: str, value: Any, branch: str | None = None,
-            message: str = "update") -> str:
+    def set(self, key: str, value: Any, branch: str | None = None, message: str = "update") -> str:
         """Write a value, committing it on ``branch`` (default: current)."""
         branch = branch or self._current_branch()
         branch_dir = self._branch_data_dir(branch)
@@ -135,15 +146,19 @@ class MemoryStore:
         except RuntimeError:
             return []
         prefix = f"data/{branch}/"
-        return [t[len(prefix): -len(".json")] for t in tree.splitlines()
-                if t.startswith(prefix) and t.endswith(".json")]
+        return [
+            t[len(prefix) : -len(".json")]
+            for t in tree.splitlines()
+            if t.startswith(prefix) and t.endswith(".json")
+        ]
 
     def history(self, branch: str | None = None, limit: int = 50) -> list[CommitInfo]:
         branch = branch or self._current_branch()
         out: list[CommitInfo] = []
         try:
-            log_lines = _git(self.path, "log", branch, f"--max-count={limit}",
-                             "--pretty=format:%H|%s|%P").splitlines()
+            log_lines = _git(
+                self.path, "log", branch, f"--max-count={limit}", "--pretty=format:%H|%s|%P"
+            ).splitlines()
         except RuntimeError:
             return []
         for line in log_lines:
@@ -171,8 +186,7 @@ class MemoryStore:
                 removed.append(key)
         return {"added": added, "changed": changed, "removed": removed}
 
-    def merge(self, source: str, target: str | None = None,
-              policy: str = "ours") -> str:
+    def merge(self, source: str, target: str | None = None, policy: str = "ours") -> str:
         """Merge ``source`` branch into ``target`` (default: current).
 
         Merge policies:
@@ -188,7 +202,14 @@ class MemoryStore:
             # conflict -> resolve per policy (file-level fallback for git-level conflicts)
             _git(self.path, "checkout", "-q", "--theirs" if policy == "theirs" else "--ours", ".")
             _git(self.path, "add", "-A")
-            _git(self.path, "commit", "-q", "--no-edit", "-m", f"merge {source} into {target} (policy={policy})")
+            _git(
+                self.path,
+                "commit",
+                "-q",
+                "--no-edit",
+                "-m",
+                f"merge {source} into {target} (policy={policy})",
+            )
 
         # policy overlay: source branch files live under ``data/<source>/``;
         # overlay them onto ``data/<target>/`` according to the policy so
@@ -199,7 +220,6 @@ class MemoryStore:
 
     def _overlay_branch(self, source: str, target: str, policy: str) -> str | None:
         """Copy source-branch data files into the target branch per policy."""
-        import time
         src_dir = self._branch_data_dir(source)
         tgt_dir = self._branch_data_dir(target)
         os.makedirs(tgt_dir, exist_ok=True)
@@ -268,31 +288,96 @@ class MemoryStore:
                 if key.startswith("__"):
                     continue
                 if self.get(key, branch=branch) != value:
-                    self.set(key, value, branch=branch,
-                             message=f"sync import from {snapshot.get('store')}")
+                    self.set(key, value, branch=branch, message=f"sync import from {snapshot.get('store')}")
                     n += 1
         return n
 
-    def search(self, query: str, branch: str | None = None, top_k: int = 5) -> list[dict[str, Any]]:
-        """Simple keyword/substring search over committed values.
+    # ------------------------------------------------------------------
+    # Dense (vector) retrieval over committed values.
+    # ------------------------------------------------------------------
 
-        A full build would index entries with local embeddings
-        (``numpy`` + cosine over word-frequency vectors) — the hook is
-        here; see ``MemoryFabric`` for the vector cache.
+    @staticmethod
+    def _embed_word(word: str, dim: int = 64) -> np.ndarray:
+        """Deterministic pseudo-embedding for a word: hash -> unit vector.
+
+        This is intentionally lightweight — no neural model required — so
+        cosine similarity over averaged word vectors gives a reasonable
+        notion of semantic proximity for short phrases while staying
+        fully offline and dependency-free (numpy).
+        """
+        import numpy as np
+
+        h = int.from_bytes(word.encode()[:32], "little") if word else 0
+        rng = np.random.RandomState(h % (2**31))
+        v = rng.standard_normal(dim).astype(np.float32)
+        n = np.linalg.norm(v)
+        return v / n if n > 1e-9 else v
+
+    def _embed_text(self, text: str, dim: int = 64) -> np.ndarray:
+        tokens = [t for t in text.lower().replace("-", " ").replace("_", " ").split() if t]
+        if not tokens:
+            return np.zeros(dim, dtype=np.float32)
+        v = np.mean([self._embed_word(t, dim) for t in tokens], axis=0)
+        n = np.linalg.norm(v)
+        return v / n if n > 1e-9 else v
+
+    def search(
+        self, query: str, branch: str | None = None, top_k: int = 5, mode: str = "auto"
+    ) -> list[dict[str, Any]]:
+        """Search committed values.
+
+        ``mode`` controls the retrieval strategy:
+        * ``"keyword"`` -- classic term-frequency substring matching
+          (works without numpy and is exact for literal terms)
+        * ``"vector"``  -- dense retrieval: the query and every entry are
+          embedded as averaged word vectors and ranked by cosine similarity
+        * ``"auto"``    -- vector search when ``numpy`` is available and the
+          branch has entries, otherwise keyword search
+
+        Keyword matches always carry an exact ``score`` (term hits); vector
+        matches carry a ``similarity`` in ``[0, 1]`` (cosine of the mean
+        word vectors) plus the keyword score as a secondary tie-breaker.
         """
         branch = branch or self._current_branch()
         q = query.lower()
-        # score per query word (term frequency), so multi-word queries match
-        # entries containing any of the terms, ranked by total hits
         terms = [t for t in q.split() if t]
         if not terms:
             return []
-        results = []
-        for key in self.list_keys(branch):
-            val = self.get(key, branch=branch)
+        entries = [(k, self.get(k, branch=branch)) for k in self.list_keys(branch)]
+        entries = [(k, v) for k, v in entries if v is not None]
+        if not entries:
+            return []
+
+        use_vector = (mode == "vector") or (mode == "auto" and _HAS_NUMPY and _has_vector_support)
+        keyword_results = []
+        for key, val in entries:
             text = json.dumps(val).lower()
             score = sum(text.count(t) for t in terms)
             if score > 0:
-                results.append({"key": key, "value": val, "score": score})
-        results.sort(key=lambda r: r["score"], reverse=True)
-        return results[:top_k]
+                keyword_results.append({"key": key, "value": val, "score": score})
+
+        if not use_vector:
+            keyword_results.sort(key=lambda r: r["score"], reverse=True)
+            return keyword_results[:top_k]
+
+        import numpy as np  # noqa: PLC0415
+
+        q_vec = self._embed_text(query)
+        vector_results = []
+        for key, val in entries:
+            e_vec = self._embed_text(json.dumps(val))
+            sim = float(np.dot(q_vec, e_vec))
+            # cosine of unit vectors is in [-1, 1]; rescale to [0, 1] for
+            # a cleaner ranking where 1.0 = identical direction
+            similarity = (sim + 1.0) / 2.0
+            if similarity > 0.5:  # only surface non-trivial matches
+                vector_results.append(
+                    {
+                        "key": key,
+                        "value": val,
+                        "similarity": similarity,
+                        "score": sum(json.dumps(val).lower().count(t) for t in terms),
+                    }
+                )
+        vector_results.sort(key=lambda r: (r["similarity"], r["score"]), reverse=True)
+        return vector_results[:top_k]

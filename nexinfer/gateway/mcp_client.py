@@ -24,8 +24,8 @@ log = logging.getLogger("nexinfer.gateway.mcp")
 
 try:
     from mcp import ClientSession, StdioServerParameters
-    from mcp.client.stdio import stdio_client
     from mcp.client.sse import sse_client
+    from mcp.client.stdio import stdio_client
 
     _HAS_MCP = True
 except ImportError:  # pragma: no cover
@@ -84,8 +84,12 @@ class McpGatewayClient:
             await self.session.initialize()
             result = await self.session.list_tools()
             self._tools = [
-                McpTool(server=self.server_name, name=t.name, description=t.description or "",
-                        input_schema=(t.inputSchema or {}))
+                McpTool(
+                    server=self.server_name,
+                    name=t.name,
+                    description=t.description or "",
+                    input_schema=(t.inputSchema or {}),
+                )
                 for t in result.tools
             ]
             log.info("MCP server %s: %d tools", self.server_name, len(self._tools))
@@ -114,7 +118,7 @@ class McpGatewayClient:
         if self._exit_stack:
             try:
                 await self._exit_stack.__aexit__(None, None, None)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
         self.session = None
         self._exit_stack = None

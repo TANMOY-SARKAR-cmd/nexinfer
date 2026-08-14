@@ -44,7 +44,7 @@ class Skill:
         }
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "Skill":
+    def from_dict(cls, d: dict[str, Any]) -> Skill:
         return cls(
             name=d["name"],
             description=d.get("description", ""),
@@ -99,7 +99,7 @@ class SkillsRegistry:
                         d = yaml.safe_load(f)
                     if isinstance(d, dict) and "name" in d:
                         self._skills[d["name"]] = Skill.from_dict(d)
-                except Exception:  # noqa: BLE001
+                except Exception:
                     pass
 
     def get(self, name: str) -> Skill | None:

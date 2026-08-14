@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
-from typing import Any
 
 import numpy as np
 
@@ -36,8 +35,7 @@ class SpecialModule(ABC):
         ...
 
     @abstractmethod
-    def memory_bytes(self) -> int:
-        ...
+    def memory_bytes(self) -> int: ...
 
     @abstractmethod
     def load_weights(self, tensors: dict[str, np.ndarray]) -> None:
@@ -125,7 +123,7 @@ class SpecialModuleBackend(Backend):
         for name, cls in _REGISTRY.items():
             try:
                 module = cls()
-            except Exception:  # noqa: BLE001
+            except Exception:
                 continue
             if module.is_available():
                 self.modules[name] = module

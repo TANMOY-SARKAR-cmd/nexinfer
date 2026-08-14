@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 
-from nexinfer.backends.base import Backend, DeviceInfo, ModelSpec
+from nexinfer.backends.base import Backend, ModelSpec
 from nexinfer.engine.profiler import SystemProfile
 from nexinfer.engine.types import DeviceId
 
@@ -77,7 +77,7 @@ def plan_placement(
     """Compute where each model layer should live."""
     plan = PlacementPlan()
     model_bytes = _model_bytes(spec, _quant_factor(spec.quant))
-    model_gb = model_bytes / 1024 ** 3
+    model_gb = model_bytes / 1024**3
     kv_blocks_needed = (kv_cache_target_tokens + block_size - 1) // block_size
 
     gpus = sorted(
@@ -100,7 +100,7 @@ def plan_placement(
     vram = best.total_memory_bytes * HEADROOM
     if vram >= model_bytes:
         plan.assignments[best.device_id] = [(0, spec.num_layers)]
-        leftover = (vram - model_bytes) / 1e9
+        _leftover = (vram - model_bytes) / 1e9
         plan.kv_cache_device = best.device_id
         plan.kv_cache_blocks_device = kv_blocks_needed
         plan.kv_cache_blocks_host = 0
@@ -118,13 +118,9 @@ def plan_placement(
         plan.kv_cache_blocks_device = kv_blocks_needed // 2
         plan.kv_cache_blocks_host = max(kv_blocks_needed - plan.kv_cache_blocks_device, 64)
         plan.strategy = "hybrid_split"
-        plan.notes.append(
-            f"{gpu_layers}/{spec.num_layers} layers on {best.device_id}, rest on CPU"
-        )
+        plan.notes.append(f"{gpu_layers}/{spec.num_layers} layers on {best.device_id}, rest on CPU")
         if len(gpus) > 1:
-            plan.notes.append(
-                f"{len(gpus) - 1} additional GPU(s) available for distributed expansion"
-            )
+            plan.notes.append(f"{len(gpus) - 1} additional GPU(s) available for distributed expansion")
     else:
         plan.assignments["/cpu:0"] = [(0, spec.num_layers)]
         plan.kv_cache_blocks_host = kv_blocks_needed
@@ -143,7 +139,5 @@ def select_backends(system: SystemProfile, prefer: str | None = None) -> list[Ba
 
     backends = detect_all_backends()
     if prefer:
-        backends = [b for b in backends if b.name == prefer] + [
-            b for b in backends if b.name != prefer
-        ]
+        backends = [b for b in backends if b.name == prefer] + [b for b in backends if b.name != prefer]
     return backends

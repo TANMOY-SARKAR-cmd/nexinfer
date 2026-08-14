@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import logging
 import platform
-from typing import Optional
 
 import numpy as np
 
@@ -54,12 +53,19 @@ class DirectMLBackend(Backend):
         if not _WIN or not _has_directml():
             return []
         return [
-            DeviceInfo("/gpu:directml:0", DeviceKind.GPU_NVIDIA, "microsoft",
-                       "DirectML Device (DX12)", 8 * 1024 ** 3, 4.0)
+            DeviceInfo(
+                "/gpu:directml:0",
+                DeviceKind.GPU_NVIDIA,
+                "microsoft",
+                "DirectML Device (DX12)",
+                8 * 1024**3,
+                4.0,
+            )
         ]
 
     def load(self, model_path_or_id: str, spec: ModelSpec, devices: list[DeviceId]) -> None:
         import os
+
         if not _WIN:
             raise RuntimeError("DirectML backend requires Windows")
         if not _has_directml():

@@ -7,11 +7,9 @@ so unit tests run without downloading anything.
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import re
-from typing import Optional
 
 log = logging.getLogger("nexinfer.tokenizer")
 
@@ -39,7 +37,7 @@ class Tokenizer:
         self._hf = hf
 
     @staticmethod
-    def load(model_name_or_path: str, cache_dir: str | None = None) -> "Tokenizer":
+    def load(model_name_or_path: str, cache_dir: str | None = None) -> Tokenizer:
         """Load a tokenizer from a HF repo id or a local directory."""
         if not _HAS_TOKENIZERS:
             return Tokenizer(MinimalBPE(vocab_size=32000))
@@ -65,7 +63,7 @@ class Tokenizer:
                 path = _download_hub_file(model_name_or_path, fname, cache_dir)
                 if fname.endswith(".json"):
                     return Tokenizer(HFTokenizer.from_file(path))
-            except Exception:  # noqa: BLE001
+            except Exception:
                 continue
         raise FileNotFoundError(f"could not load tokenizer for {model_name_or_path}")
 
@@ -74,28 +72,45 @@ class Tokenizer:
         if hasattr(raw, "ids"):
             return list(raw.ids)  # HF tokenizers: Encoding object
         return list(raw)  # MinimalBPE fallback returns a plain list
+
     def decode(self, ids: list[int]) -> str:
         return self._hf.decode(ids)  # type: ignore[union-attr]
+
+    def apply_chat_template(
+        self, messages: list[dict[str, str]], template: str | None = None, add_generation_prompt: bool = True
+    ) -> str:
+        """Format a conversation into prompt text using a chat template.
+
+        ``template`` may be a built-in template name (``smollm``,
+        ``chatml``, ``alpaca``, ``minimal``) or raw template text. When the
+        loaded tokenizer exposes ``chat_template`` metadata (HF repos), that
+        template is used unless ``template`` is given explicitly.
+        """
+        from nexinfer.engine.chat_template import ChatTemplate
+
+        if template is None:
+            template = getattr(self._hf, "chat_template", None) or "minimal"
+        return ChatTemplate(template).apply(messages, add_generation_prompt)
 
     @property
     def bos_token_id(self) -> int | None:
         try:
             return self._hf.token_to_id("<s>")  # type: ignore[union-attr]
-        except Exception:  # noqa: BLE001
+        except Exception:
             return None
 
     @property
     def eos_token_id(self) -> int | None:
         try:
             return self._hf.token_to_id("</s>")  # type: ignore[union-attr]
-        except Exception:  # noqa: BLE001
+        except Exception:
             return None
 
     @property
     def vocab_size(self) -> int:
         try:
             return self._hf.get_vocab_size()  # type: ignore[union-attr]
-        except Exception:  # noqa: BLE001
+        except Exception:
             return 0
 
 

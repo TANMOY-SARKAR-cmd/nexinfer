@@ -18,9 +18,6 @@ import json
 import logging
 import os
 from dataclasses import dataclass
-from typing import Any
-
-import numpy as np
 
 from nexinfer.memory.store import MemoryStore
 
@@ -54,7 +51,7 @@ class MemoryFabric:
                 with open(policy_file) as f:
                     for d in json.load(f):
                         self._policies[d["store"]] = StorePolicy(**d)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
         for name in os.listdir(self.root):
             store_dir = os.path.join(self.root, name)
@@ -63,22 +60,27 @@ class MemoryFabric:
 
     def _persist_policies(self) -> None:
         with open(os.path.join(self.root, "policies.json"), "w") as f:
-            json.dump([
-                {"store": p.store, "kind": p.kind, "owners": p.owners, "merge_policy": p.merge_policy}
-                for p in self._policies.values()
-            ], f, indent=2)
+            json.dump(
+                [
+                    {"store": p.store, "kind": p.kind, "owners": p.owners, "merge_policy": p.merge_policy}
+                    for p in self._policies.values()
+                ],
+                f,
+                indent=2,
+            )
 
     # ------------------------------------------------------------------
 
-    def create_store(self, name: str, kind: str = "private",
-                     owners: list[str] | None = None, merge_policy: str = "theirs") -> MemoryStore:
+    def create_store(
+        self, name: str, kind: str = "private", owners: list[str] | None = None, merge_policy: str = "theirs"
+    ) -> MemoryStore:
         if name in self._stores:
             return self._stores[name]
         store = MemoryStore(os.path.join(self.root, name), name)
         self._stores[name] = store
-        self._policies[name] = StorePolicy(store=name, kind=kind,
-                                           owners=owners or ["default"],
-                                           merge_policy=merge_policy)
+        self._policies[name] = StorePolicy(
+            store=name, kind=kind, owners=owners or ["default"], merge_policy=merge_policy
+        )
         self._persist_policies()
         return store
 
@@ -88,8 +90,7 @@ class MemoryFabric:
     def whiteboard(self) -> MemoryStore:
         wb = self.get_store("whiteboard")
         if wb is None:
-            wb = self.create_store("whiteboard", kind="shared",
-                                   owners=["*"], merge_policy="last_write")
+            wb = self.create_store("whiteboard", kind="shared", owners=["*"], merge_policy="last_write")
         return wb
 
     def can_write(self, agent_id: str, store_name: str) -> bool:
@@ -133,17 +134,19 @@ class MemoryFabric:
             json.dump(store.export_snapshot(), f, indent=2)
         return path
 
-    def pull_snapshot(self, store_name: str, source_path: str,
-                      policy: str | None = None) -> int:
+    def pull_snapshot(self, store_name: str, source_path: str, policy: str | None = None) -> int:
         """Import a snapshot from another node."""
         with open(source_path) as f:
             snapshot = json.load(f)
         store = self.get_store(store_name)
         if store is None:
             pol = self._policies.get(store_name)
-            store = self.create_store(store_name, kind=pol.kind if pol else "shared",
-                                      owners=pol.owners if pol else ["*"],
-                                      merge_policy=policy or (pol.merge_policy if pol else "theirs"))
+            store = self.create_store(
+                store_name,
+                kind=pol.kind if pol else "shared",
+                owners=pol.owners if pol else ["*"],
+                merge_policy=policy or (pol.merge_policy if pol else "theirs"),
+            )
         else:
             store.merge_policy = policy or store.merge_policy if hasattr(store, "merge_policy") else policy
         return store.import_snapshot(snapshot)

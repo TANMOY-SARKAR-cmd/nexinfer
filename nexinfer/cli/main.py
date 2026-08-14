@@ -22,11 +22,14 @@ import logging
 import sys
 from typing import Any
 
+from nexinfer.backends.base import ModelSpec
 from nexinfer.engine.types import GenerationRequest
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="nexinfer", description="NexusInfer: cross-platform distributed inference engine")
+    p = argparse.ArgumentParser(
+        prog="nexinfer", description="NexusInfer: cross-platform distributed inference engine"
+    )
     p.add_argument("--verbose", "-v", action="store_true")
     sub = p.add_subparsers(dest="cmd", required=True)
 
@@ -84,7 +87,7 @@ def _build_parser() -> argparse.ArgumentParser:
     pma.add_argument("--args", nargs="*")
     pma.add_argument("--url", help="SSE/streamable-HTTP server URL")
     pma.add_argument("--env", nargs="*", default=[])
-    pml = pms.add_parser("list", help="list configured MCP servers")
+    _pml = pms.add_parser("list", help="list configured MCP servers")
     pmt = pms.add_parser("tools", help="list tools of a server")
     pmt.add_argument("name")
 
@@ -125,7 +128,7 @@ def _build_parser() -> argparse.ArgumentParser:
     sy.add_argument("path", help="dir (push) or snapshot file (pull)")
 
     # backends
-    pb = sub.add_parser("backends", help="list backends and detected devices")
+    _pb = sub.add_parser("backends", help="list backends and detected devices")
 
     # web
     pw = sub.add_parser("web", help="test the internet gateway")
@@ -139,23 +142,22 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _cmd_run(args: argparse.Namespace) -> None:
-    from nexinfer.backends.base import ModelSpec
     from nexinfer.engine.runtime import Engine
 
     engine = Engine()
     spec = _default_spec(args)
     engine.bootstrap(args.model, spec, backend_name=args.backend)
-    req = GenerationRequest(prompt=args.prompt, max_tokens=args.max_tokens,
-                            temperature=args.temperature, stop_sequences=args.stop)
+    req = GenerationRequest(
+        prompt=args.prompt, max_tokens=args.max_tokens, temperature=args.temperature, stop_sequences=args.stop
+    )
     out = engine.generate(req)
     print(out.text)
     print(f"\n[{out.finish_reason} | {out.usage}]")
 
 
 def _cmd_serve(args: argparse.Namespace) -> None:
-    from nexinfer.backends.base import ModelSpec
-    from nexinfer.engine.runtime import Engine
     from nexinfer.cli.http_server import HttpServer
+    from nexinfer.engine.runtime import Engine
 
     engine = Engine()
     spec = _default_spec(args)
@@ -166,7 +168,6 @@ def _cmd_serve(args: argparse.Namespace) -> None:
 
 
 def _cmd_chat(args: argparse.Namespace) -> None:
-    from nexinfer.backends.base import ModelSpec
     from nexinfer.engine.runtime import Engine
     from nexinfer.services.skills import SkillsRegistry
 
@@ -187,8 +188,12 @@ def _cmd_chat(args: argparse.Namespace) -> None:
             break
         if not line.strip():
             continue
-        req = GenerationRequest(prompt=line.strip(), max_tokens=256, agent_id=args.agent,
-                                tools=[engine.backend.capabilities() and {} for _ in []])
+        req = GenerationRequest(
+            prompt=line.strip(),
+            max_tokens=256,
+            agent_id=args.agent,
+            tools=[engine.backend.capabilities() and {} for _ in []],
+        )
         out = engine.generate(req)
         print(out.text)
         if out.tool_calls:
@@ -204,8 +209,13 @@ def _cmd_profile(args: argparse.Namespace) -> None:
 
     system = SystemProfile.from_system(benchmark=args.benchmark)
     spec = ModelSpec(
-        num_layers=args.layers, hidden_size=args.hidden, num_attention_heads=8,
-        num_kv_heads=4, head_dim=args.hidden // 8, vocab_size=32000, inter_dim=args.hidden * 4,
+        num_layers=args.layers,
+        hidden_size=args.hidden,
+        num_attention_heads=8,
+        num_kv_heads=4,
+        head_dim=args.hidden // 8,
+        vocab_size=32000,
+        inter_dim=args.hidden * 4,
     )
     placement = plan_placement(spec, system)
     print(f"CPU cores : {system.cpu_cores}")
@@ -213,12 +223,14 @@ def _cmd_profile(args: argparse.Namespace) -> None:
     print(f"GPU VRAM  : {system.gpu_vram_gb:.1f} GB")
     print("Devices:")
     for d in system.devices:
-        print(f"  {d.device_id:24s} {d.name:40s} {d.total_memory_bytes / 1024 ** 3:7.1f} GB")
+        print(f"  {d.device_id:24s} {d.name:40s} {d.total_memory_bytes / 1024**3:7.1f} GB")
     print(f"\nPlacement strategy: {placement.strategy}")
     for dev, ranges in placement.assignments.items():
         print(f"  {dev}: layers {ranges}")
-    print(f"KV-cache: device={placement.kv_cache_device}, device_blocks={placement.kv_cache_blocks_device}, "
-          f"host_blocks={placement.kv_cache_blocks_host}")
+    print(
+        f"KV-cache: device={placement.kv_cache_device}, device_blocks={placement.kv_cache_blocks_device}, "
+        f"host_blocks={placement.kv_cache_blocks_host}"
+    )
     for note in placement.notes:
         print(" -", note)
 
@@ -230,8 +242,15 @@ def _cmd_cluster(args: argparse.Namespace) -> None:
     from nexinfer.distributed.worker import Worker
     from nexinfer.transports.registry import make_transport
 
-    spec = ModelSpec(num_layers=args.layers, hidden_size=args.hidden, num_attention_heads=8,
-                     num_kv_heads=4, head_dim=args.hidden // 8, vocab_size=32000, inter_dim=args.hidden * 4)
+    spec = ModelSpec(
+        num_layers=args.layers,
+        hidden_size=args.hidden,
+        num_attention_heads=8,
+        num_kv_heads=4,
+        head_dim=args.hidden // 8,
+        vocab_size=32000,
+        inter_dim=args.hidden * 4,
+    )
     transport = make_transport(args.transport)
     if args.role == "coordinator":
         coord = Coordinator(args.node_id, spec, transport, args.host, args.port, manual_peers=args.peers)
@@ -243,8 +262,16 @@ def _cmd_cluster(args: argparse.Namespace) -> None:
             asyncio.run(coord.close())
     else:
         backend = NumpyBackend()
-        worker = Worker(args.node_id, backend, spec, None, transport, rank=1,
-                        control_host=args.host, control_port=args.port)
+        worker = Worker(
+            args.node_id,
+            backend,
+            spec,
+            None,
+            transport,
+            rank=1,
+            control_host=args.host,
+            control_port=args.port,
+        )
         asyncio.run(worker.start())
 
 
@@ -257,8 +284,11 @@ def _cmd_mcp(args: argparse.Namespace) -> None:
         if args.url:
             config = {"url": args.url}
         else:
-            config = {"command": args.command or "npx", "args": args.args or [],
-                      "env": dict(kv.split("=", 1) for kv in args.env if "=" in kv)}
+            config = {
+                "command": args.command or "npx",
+                "args": args.args or [],
+                "env": dict(kv.split("=", 1) for kv in args.env if "=" in kv),
+            }
         cfg.add(args.name, config)
         print(f"added MCP server {args.name!r}")
     elif args.mcp_cmd == "list":
@@ -331,15 +361,16 @@ def _cmd_web(args: argparse.Namespace) -> None:
     print(json.dumps(result, indent=2)[:2000])
 
 
-def _default_spec(args: argparse.Namespace) -> "ModelSpec":
-    from nexinfer.backends.base import ModelSpec
-
+def _default_spec(args: argparse.Namespace) -> ModelSpec:
     hidden = getattr(args, "hidden", 768) or 768
     return ModelSpec(
         num_layers=getattr(args, "layers", 12) or 12,
         hidden_size=hidden,
-        num_attention_heads=8, num_kv_heads=4, head_dim=hidden // 8,
-        vocab_size=32000, inter_dim=hidden * 4,
+        num_attention_heads=8,
+        num_kv_heads=4,
+        head_dim=hidden // 8,
+        vocab_size=32000,
+        inter_dim=hidden * 4,
     )
 
 
@@ -352,9 +383,15 @@ def main() -> None:
         stream=sys.stderr,
     )
     dispatch = {
-        "run": _cmd_run, "serve": _cmd_serve, "chat": _cmd_chat,
-        "profile": _cmd_profile, "cluster": _cmd_cluster, "mcp": _cmd_mcp,
-        "memory": _cmd_memory, "backends": _cmd_backends, "web": _cmd_web,
+        "run": _cmd_run,
+        "serve": _cmd_serve,
+        "chat": _cmd_chat,
+        "profile": _cmd_profile,
+        "cluster": _cmd_cluster,
+        "mcp": _cmd_mcp,
+        "memory": _cmd_memory,
+        "backends": _cmd_backends,
+        "web": _cmd_web,
     }
     dispatch[args.cmd](args)
 

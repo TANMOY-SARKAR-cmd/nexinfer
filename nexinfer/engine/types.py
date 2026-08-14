@@ -9,7 +9,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Optional
+from typing import Any
 
 
 class DeviceKind(str, Enum):
@@ -73,8 +73,8 @@ class ParallelPlan:
     world_size: int
     rank: int
     # tensor parallel: slice indices per rank; pipeline: layer ranges per rank
-    tp_slices: Optional[list[tuple[int, int]]] = None
-    pp_layers: Optional[list[tuple[int, int]]] = None
+    tp_slices: list[tuple[int, int]] | None = None
+    pp_layers: list[tuple[int, int]] | None = None
 
     @property
     def is_root(self) -> bool:

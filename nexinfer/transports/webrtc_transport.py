@@ -12,9 +12,8 @@ transport reports itself unavailable.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
-from typing import Callable
+from collections.abc import Callable
 
 import numpy as np
 
@@ -23,8 +22,8 @@ from nexinfer.transports.base import TensorFrame, Transport
 log = logging.getLogger("nexinfer.transports.webrtc")
 
 try:
-    from aiortc import RTCPeerConnection, RTCSessionDescription, RTCDataChannel  # type: ignore
-    from aiortc.contrib.signaling import BYE  # type: ignore
+    from aiortc import RTCDataChannel, RTCPeerConnection, RTCSessionDescription  # type: ignore
+    from aiortc.contrib.signaling import BYE as _bye  # noqa: F401
 
     _HAS_AIORTC = True
 except ImportError:  # pragma: no cover
@@ -118,7 +117,7 @@ class WebRTCTransport(Transport):
                         shape = _st.unpack("<" + "Q" * ndim, buf.read(8 * ndim))
                         arr = np.frombuffer(buf.read(), dtype=np.dtype(dtype_num)).reshape(shape).copy()
                         self._queues[peer_id].put_nowait((name, arr))
-                    except Exception as exc:  # noqa: BLE001
+                    except Exception as exc:
                         log.warning("webrtc frame decode failed: %s", exc)
 
     async def send(self, peer: str, name: str, arr: np.ndarray) -> None:

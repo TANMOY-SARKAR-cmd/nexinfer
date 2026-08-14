@@ -46,7 +46,7 @@ class SignalingServer:
                 resp = {"status": "error", "message": f"unknown type {kind}"}
             writer.write(json.dumps(resp).encode() + b"\n")
             await writer.drain()
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             log.warning("signaling error: %s", exc)
         finally:
             writer.close()
@@ -58,12 +58,15 @@ class SignalingServer:
             await server.serve_forever()
 
 
-async def fetch_peer_sdp(signaling_host: str, signaling_port: int, session: str,
-                         role: str, local_sdp: str | None = None) -> str | None:
+async def fetch_peer_sdp(
+    signaling_host: str, signaling_port: int, session: str, role: str, local_sdp: str | None = None
+) -> str | None:
     """High-level helper: post local SDP and wait for the peer's SDP."""
     reader, writer = await asyncio.open_connection(signaling_host, signaling_port)
     if local_sdp:
-        writer.write(json.dumps({"type": f"post_{role}", "session": session, "sdp": local_sdp}).encode() + b"\n")
+        writer.write(
+            json.dumps({"type": f"post_{role}", "session": session, "sdp": local_sdp}).encode() + b"\n"
+        )
         await writer.drain()
         await reader.readline()
     peer = None

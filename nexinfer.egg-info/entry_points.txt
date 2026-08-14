@@ -1,6 +1,0 @@
-[console_scripts]
-nexinfer = nexinfer.cli.main:main
-
-[nexinfer.backends]
-cpu_numpy = nexinfer.backends.cpu_numpy:NumpyBackend
-ggml = nexinfer.backends.ggml_backend:GGMLBackend

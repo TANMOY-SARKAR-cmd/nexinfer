@@ -9,10 +9,9 @@ Requires ``grpcio`` (already a core dependency).
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import queue
-from typing import Callable
+from collections.abc import Callable
 
 import grpc
 import numpy as np
@@ -57,9 +56,14 @@ class GRPCTransport(Transport):
     async def start_server(self, host: str, port: int, on_peer: Callable | None = None) -> None:
         self._on_peer = on_peer
         self._server = grpc.server(grpc.thread_pool(4))
-        rpc_handler = grpc.method_service_handler(
-            {SERVICE: grpc.unary_stream_rpc_method_handler(lambda req, ctx: self._iter_responses(ctx))}
-        ) if False else None
+        _rpc_handler = (
+            grpc.method_service_handler(
+                {SERVICE: grpc.unary_stream_rpc_method_handler(lambda req, ctx: self._iter_responses(ctx))}
+            )
+            if False
+            else None
+        )
+
         # simpler: register generic handler
         class _Handler(grpc.GenericRpcHandler):
             def __init__(self, outer):

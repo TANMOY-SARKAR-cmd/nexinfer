@@ -21,12 +21,13 @@ import asyncio
 import json
 import logging
 import time
-from typing import Callable
+from collections.abc import Callable
 
 from nexinfer.backends.base import DeviceInfo, ModelSpec
 from nexinfer.distributed.messages import Msg
-from nexinfer.distributed.planner import ClusterPlan, NodeSpec, automatic
+from nexinfer.distributed.planner import ClusterPlan, NodeSpec, automatic, plan_pipeline, plan_tensor
 from nexinfer.engine.profiler import SystemProfile
+from nexinfer.engine.types import DeviceKind
 from nexinfer.transports.base import Transport
 
 log = logging.getLogger("nexinfer.distributed.coordinator")
@@ -43,6 +44,7 @@ class Coordinator:
         host: str = "0.0.0.0",
         port: int = 0,
         manual_peers: list[str] | None = None,
+        preferred_mode: str | None = None,
     ) -> None:
         self.node_id = node_id
         self.spec = spec
@@ -50,6 +52,7 @@ class Coordinator:
         self.host = host
         self.port = port
         self.manual_peers = manual_peers or []
+        self.preferred_mode = preferred_mode  # None = automatic (auto)
         self.nodes: dict[str, NodeSpec] = {}
         self.plan: ClusterPlan | None = None
         self._server: asyncio.AbstractServer | None = None
@@ -63,9 +66,13 @@ class Coordinator:
         self._server = srv
         self.port = srv.sockets[0].getsockname()[1]
         self.nodes[self.node_id] = NodeSpec(
-            node_id=self.node_id, host=self.host, port=self.port,
-            devices=SystemProfile.from_system().devices, model_hash=f"model:{self.spec.num_layers}:{self.spec.hidden_size}",
+            node_id=self.node_id,
+            host=self.host,
+            port=self.port,
+            devices=SystemProfile.from_system().devices,
+            model_hash=f"model:{self.spec.num_layers}:{self.spec.hidden_size}",
         )
+        self._last_heartbeat[self.node_id] = time.time()  # root counts itself as live
         await self.transport.start_server(self.host, self.port + 1000, on_peer=self._peer_connected)
         await self._announce_mdns()
         log.info("coordinator %s on port %d", self.node_id, self.port)
@@ -73,8 +80,9 @@ class Coordinator:
 
     async def _announce_mdns(self) -> None:
         try:
-            from zeroconf import Zeroconf, ServiceInfo
             import socket
+
+            from zeroconf import ServiceInfo, Zeroconf
 
             zc = Zeroconf()
             info = ServiceInfo(
@@ -85,7 +93,7 @@ class Coordinator:
                 properties={"node_id": self.node_id},
             )
             zc.register_service(info)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             log.debug("mDNS announce failed (non-fatal): %s", exc)
 
     def _peer_connected(self, peer: str) -> None:
@@ -109,7 +117,9 @@ class Coordinator:
             devices = [
                 DeviceInfo(
                     device_id=d.get("device_id", "/cpu:0"),
-                    kind=d.get("kind", "/cpu"),
+                    kind=DeviceKind(d.get("kind", "/cpu"))
+                    if isinstance(d.get("kind"), str)
+                    else d.get("kind", DeviceKind.CPU),
                     vendor=d.get("vendor", "generic"),
                     name=d.get("name", "unknown"),
                     total_memory_bytes=d.get("total_memory_bytes", 0),
@@ -117,7 +127,7 @@ class Coordinator:
                 )
                 for d in msg.payload.get("devices", [])
             ]
-            spec = msg.payload.get("spec", {})
+            _spec = msg.payload.get("spec", {})
             node = NodeSpec(
                 node_id=msg.src or msg.payload.get("node_id", "unknown"),
                 host=msg.payload.get("host", "unknown"),
@@ -139,14 +149,23 @@ class Coordinator:
 
     async def _replan(self) -> None:
         """Recompute the cluster plan whenever membership changes."""
-        members = [n for n, t in self._last_heartbeat.items()
-                   if time.time() - t < 30.0] or list(self.nodes)
+        members = [n for n, t in self._last_heartbeat.items() if time.time() - t < 30.0 and n != self.node_id]
         nodes = [self.nodes[n] for n in members]
         if len(nodes) < 2:
             self.plan = None
             return
-        self.plan = automatic(nodes, self.spec)
-        log.info("cluster plan (%s, %d nodes): %s", self.plan.mode.value, len(nodes), "; ".join(self.plan.notes))
+        # ``preferred_mode`` overrides the automatic heuristic (``None`` means
+        # automatic: PP for heterogeneous clusters, TP for homogeneous ones)
+        if self.preferred_mode == "pipeline_parallel":
+            plan = plan_pipeline(nodes, self.spec)
+        elif self.preferred_mode == "tensor_parallel":
+            plan = plan_tensor(nodes, self.spec)
+        else:
+            plan = automatic(nodes, self.spec)
+        self.plan = plan
+        log.info(
+            "cluster plan (%s, %d nodes): %s", self.plan.mode.value, len(nodes), "; ".join(self.plan.notes)
+        )
         await self._push_plan()
         if self._on_plan_ready:
             self._on_plan_ready(self.plan)
@@ -155,21 +174,24 @@ class Coordinator:
         if self.plan is None:
             return
         for node, pplan in zip(self.plan.nodes, self.plan.per_node):
-            payload = {"pp_layers": pplan.pp_layers or [], "tp_slices": pplan.tp_slices or [],
-                       "world_size": pplan.world_size, "rank": pplan.rank}
+            payload = {
+                "pp_layers": pplan.pp_layers or [],
+                "tp_slices": pplan.tp_slices or [],
+                "world_size": pplan.world_size,
+                "rank": pplan.rank,
+                "nodes": [{"node_id": n.node_id, "host": n.host, "port": n.port} for n in self.plan.nodes],
+            }
             await self._rpc(node, Msg(type="plan", payload=payload, src=self.node_id))
 
     async def _rpc(self, node: NodeSpec, msg: Msg, timeout: float = 10.0) -> Msg:
         try:
-            reader, writer = await asyncio.wait_for(
-                asyncio.open_connection(node.host, node.port), timeout
-            )
+            reader, writer = await asyncio.wait_for(asyncio.open_connection(node.host, node.port), timeout)
             writer.write((json.dumps(msg.to_dict()) + "\n").encode())
             await writer.drain()
             line = await asyncio.wait_for(reader.readline(), timeout)
             writer.close()
             return Msg.from_dict(json.loads(line)) if line else Msg(type="error")
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             log.warning("rpc to %s failed: %s", node.node_id, exc)
             return Msg(type="error", payload={"message": str(exc)}, src=self.node_id)
 

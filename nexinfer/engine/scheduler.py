@@ -9,12 +9,11 @@ scarce, and prioritized by waiting time. The scheduler yields a batch of
 from __future__ import annotations
 
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Deque
 
 import numpy as np
-from collections import deque
 
 from nexinfer.engine.types import GenerationRequest
 
@@ -72,7 +71,7 @@ class Scheduler:
         self.total_blocks = device_blocks + host_blocks
         self.block_size = block_size
         self.preempt_mode = preempt_mode
-        self.waiting: Deque[RunningRequest] = deque()
+        self.waiting: deque[RunningRequest] = deque()
         self.running: dict[str, RunningRequest] = {}
         self._used_blocks = 0
 
@@ -129,9 +128,7 @@ class Scheduler:
         return rr
 
     def request(self, req_id: str) -> RunningRequest | None:
-        return self.running.get(req_id) or next(
-            (r for r in self.waiting if r.req.request_id == req_id), None
-        )
+        return self.running.get(req_id) or next((r for r in self.waiting if r.req.request_id == req_id), None)
 
     @property
     def num_running(self) -> int:

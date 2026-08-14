@@ -13,7 +13,6 @@ import logging
 import platform
 import shutil
 import subprocess
-from typing import Optional
 
 import numpy as np
 
@@ -38,22 +37,24 @@ def _detect_amd_gpus() -> list[tuple[int, str, float]]:
     if shutil.which("rocm-smi") is not None:
         try:
             import json
-            r = subprocess.run(["rocm-smi", "--showmeminfo", "vram", "--json"],
-                               capture_output=True, text=True, timeout=3.0)
+
+            r = subprocess.run(
+                ["rocm-smi", "--showmeminfo", "vram", "--json"], capture_output=True, text=True, timeout=3.0
+            )
             if r.returncode == 0:
                 data = json.loads(r.stdout)
                 for key, info in (data.get("system", {}).get("GPU", {}) or {}).items():
                     idx = int("".join(c for c in key if c.isdigit()) or "0")
                     vram_mb = int(info.get("VRAM Total Memory (B)", 0) or 0) / (1024 * 1024)
                     out.append((idx, info.get("Card series", key), vram_mb))
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
     if not out and shutil.which("lsgpu") is not None:
         try:
             r = subprocess.run(["lsgpu"], capture_output=True, text=True, timeout=3.0)
             if r.returncode == 0 and "AMD" in r.stdout:
                 out.append((0, "AMD GPU (lsgpu)", 8192.0))
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
     return out
 
@@ -81,8 +82,14 @@ class RocmBackend(Backend):
         out = []
         for idx, name, mem_mb in _detect_amd_gpus():
             out.append(
-                DeviceInfo(f"/gpu:amd:{idx}", DeviceKind.GPU_AMD, "amd",
-                           name, int(mem_mb * 1024 * 1024), mem_mb / 1024)
+                DeviceInfo(
+                    f"/gpu:amd:{idx}",
+                    DeviceKind.GPU_AMD,
+                    "amd",
+                    name,
+                    int(mem_mb * 1024 * 1024),
+                    mem_mb / 1024,
+                )
             )
         return out
 

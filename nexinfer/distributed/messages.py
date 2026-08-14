@@ -14,7 +14,7 @@ transport. Message types:
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from typing import Any
 
 
@@ -26,8 +26,10 @@ class Msg:
     dst: str = ""
 
     @classmethod
-    def from_dict(cls, d: dict) -> "Msg":
-        return cls(type=d.get("type", ""), payload=d.get("payload", {}), src=d.get("src", ""), dst=d.get("dst", ""))
+    def from_dict(cls, d: dict) -> Msg:
+        return cls(
+            type=d.get("type", ""), payload=d.get("payload", {}), src=d.get("src", ""), dst=d.get("dst", "")
+        )
 
     def to_dict(self) -> dict:
         return {"type": self.type, "payload": self.payload, "src": self.src, "dst": self.dst}

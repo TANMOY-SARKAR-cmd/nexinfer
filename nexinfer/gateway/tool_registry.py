@@ -12,7 +12,8 @@ Built-in tool families:
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from nexinfer.services.internet_gateway import InternetGateway
 
@@ -54,37 +55,77 @@ class ToolRegistry:
                 store_obj.branch(branch, base=base)
                 return {"branch": branch, "base": base}
 
-            self.register("memory_write", _mem_write, {
-                "name": "memory_write",
-                "description": "Commit a value into a git-backed memory branch",
-                "parameters": {"type": "object", "properties": {
-                    "store": {"type": "string"}, "branch": {"type": "string"},
-                    "key": {"type": "string"}, "value": {"type": "string"},
-                    "message": {"type": "string"},
-                }, "required": ["store", "branch", "key", "value"]},
-            })
-            self.register("memory_read", _mem_read, {
-                "name": "memory_read",
-                "description": "Read a key from a memory branch",
-                "parameters": {"type": "object", "properties": {
-                    "store": {"type": "string"}, "branch": {"type": "string"}, "key": {"type": "string"},
-                }, "required": ["store", "branch", "key"]},
-            })
-            self.register("memory_search", _mem_search, {
-                "name": "memory_search",
-                "description": "Semantic search over committed memory entries",
-                "parameters": {"type": "object", "properties": {
-                    "store": {"type": "string"}, "query": {"type": "string"},
-                    "branch": {"type": "string"}, "top_k": {"type": "integer"},
-                }, "required": ["store", "query"]},
-            })
-            self.register("memory_branch", _mem_branch, {
-                "name": "memory_branch",
-                "description": "Create an isolated memory branch from a base",
-                "parameters": {"type": "object", "properties": {
-                    "store": {"type": "string"}, "branch": {"type": "string"}, "base": {"type": "string"},
-                }, "required": ["store", "branch"]},
-            })
+            self.register(
+                "memory_write",
+                _mem_write,
+                {
+                    "name": "memory_write",
+                    "description": "Commit a value into a git-backed memory branch",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "store": {"type": "string"},
+                            "branch": {"type": "string"},
+                            "key": {"type": "string"},
+                            "value": {"type": "string"},
+                            "message": {"type": "string"},
+                        },
+                        "required": ["store", "branch", "key", "value"],
+                    },
+                },
+            )
+            self.register(
+                "memory_read",
+                _mem_read,
+                {
+                    "name": "memory_read",
+                    "description": "Read a key from a memory branch",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "store": {"type": "string"},
+                            "branch": {"type": "string"},
+                            "key": {"type": "string"},
+                        },
+                        "required": ["store", "branch", "key"],
+                    },
+                },
+            )
+            self.register(
+                "memory_search",
+                _mem_search,
+                {
+                    "name": "memory_search",
+                    "description": "Semantic search over committed memory entries",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "store": {"type": "string"},
+                            "query": {"type": "string"},
+                            "branch": {"type": "string"},
+                            "top_k": {"type": "integer"},
+                        },
+                        "required": ["store", "query"],
+                    },
+                },
+            )
+            self.register(
+                "memory_branch",
+                _mem_branch,
+                {
+                    "name": "memory_branch",
+                    "description": "Create an isolated memory branch from a base",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "store": {"type": "string"},
+                            "branch": {"type": "string"},
+                            "base": {"type": "string"},
+                        },
+                        "required": ["store", "branch"],
+                    },
+                },
+            )
 
     def register(self, name: str, fn: Callable, schema: dict[str, Any]) -> None:
         self._callables[name] = fn
@@ -127,7 +168,7 @@ class ToolCaller:
         if fn is not None and not tool_name.startswith("mcp:"):
             try:
                 return fn(**arguments)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 return {"error": str(exc), "tool": tool_name}
         if tool_name.startswith("mcp:"):
             _, server, tool = tool_name.split(":", 2)
@@ -136,15 +177,15 @@ class ToolCaller:
                 return {"error": f"MCP server {server!r} not connected", "tool": tool_name}
             try:
                 import asyncio
+
                 try:
                     loop = asyncio.get_running_loop()
                 except RuntimeError:
                     loop = None
                 if loop and loop.is_running():
-                    from concurrent.futures import Future
                     future = asyncio.run_coroutine_threadsafe(client.call_tool(tool, arguments), loop)
                     return future.result(timeout=30)
                 return asyncio.run(client.call_tool(tool, arguments))
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 return {"error": str(exc), "tool": tool_name}
         return {"error": f"unknown tool {tool_name!r}", "tool": tool_name}
