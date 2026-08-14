@@ -42,3 +42,7 @@ nexinfer-memory/
 
 # Environment
 .env
+
+# Session dev notes
+.session_state.md
+.github/
